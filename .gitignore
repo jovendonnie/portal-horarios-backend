@@ -5,3 +5,11 @@ venv/
 .env
 .pytest_cache/
 *.egg-info/
+
+# Archivos de agente/contexto (no versionar)
+.claude/
+AGENTS.md
+CLAUDE.md
+docs/
+spec.md
+specs/
