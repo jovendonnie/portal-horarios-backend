@@ -27,7 +27,7 @@ class ExcelService:
             excel,
             sheet_name="empleados",
             skiprows=2,
-            usecols="B:D"
+            usecols="B:E"
         )
 
         employee_ids = {}
@@ -46,10 +46,15 @@ class ExcelService:
                 employee["Cargo"]
             ).strip()
 
+            correo = str(
+                employee["Correo electronico"]
+            ).strip()
+
             usuario = await self.employees_repository.create_or_update(
                 nombre_completo=nombre,
                 area=area,
-                cargo=cargo
+                cargo=cargo,
+                correo_electronico=correo
             )
 
             employee_ids[nombre] = usuario["_id"]
@@ -84,31 +89,31 @@ class ExcelService:
                 "lunes": {
                     "entrada": str(schedule["Lunes entrada"]),
                     "salida": str(schedule["lunes salida"]),
-                    "estado": str(schedule["Estado"])
+                    "estado": str(schedule["Lunes estado"])
                 },
 
                 "martes": {
                     "entrada": str(schedule["Martes entrada"]),
                     "salida": str(schedule["Martes salida"]),
-                    "estado": str(schedule["Estado.1"])
+                    "estado": str(schedule["Martes estado"])
                 },
 
                 "miercoles": {
                     "entrada": str(schedule["Miercoles entrada"]),
                     "salida": str(schedule["Miercoles salida"]),
-                    "estado": str(schedule["Estado.2"])
+                    "estado": str(schedule["Miercoles estado"])
                 },
 
                 "jueves": {
                     "entrada": str(schedule["Jueves entrada"]),
                     "salida": str(schedule["Jueves salida"]),
-                    "estado": str(schedule["Estado.3"])
+                    "estado": str(schedule["Jueves estado"])
                 },
 
                 "viernes": {
                     "entrada": str(schedule["Viernes entrada"]),
                     "salida": str(schedule["Viernes salida"]),
-                    "estado": str(schedule["Estado.4"])
+                    "estado": str(schedule["Viernes estado"])
                 }
             }
 
@@ -123,4 +128,3 @@ class ExcelService:
             "empleados": len(employee_ids),
             "horarios": horarios_procesados
         }
-    

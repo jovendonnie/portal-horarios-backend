@@ -10,7 +10,8 @@ class EmployeesRepository:
         self,
         nombre_completo: str,
         area: str,
-        cargo: str
+        cargo: str,
+        correo_electronico: str
     ):
         await self.collection.update_one(
             {
@@ -20,7 +21,8 @@ class EmployeesRepository:
                 "$set": {
                     "nombre_completo": nombre_completo,
                     "area": area,
-                    "cargo": cargo
+                    "cargo": cargo,
+                    "correo_electronico": correo_electronico
                 }
             },
             upsert=True
