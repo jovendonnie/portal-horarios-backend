@@ -38,7 +38,7 @@ class EmailAlreadyExistsError(Exception):
 
 @dataclass(frozen=True)
 class RegisteredUser:
-    """Resultado de dar de alta una cuenta: el documento creado y su contraseña temporal."""
+    """Resultado de dar de alta una cuenta: el documento creado y su co git diff specs/001-login/tasks.mdntraseña temporal."""
 
     user: dict[str, Any]
     temporary_password: str

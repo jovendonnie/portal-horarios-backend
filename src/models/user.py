@@ -28,6 +28,11 @@ async def find_user_by_email(email: str) -> dict[str, Any] | None:
     return await db[COLLECTION_NAME].find_one({"email": email})
 
 
+async def find_user_by_id(user_id: Any) -> dict[str, Any] | None:
+    db = get_database()
+    return await db[COLLECTION_NAME].find_one({"_id": user_id})
+
+
 async def update_user(email: str, updates: dict[str, Any]) -> bool:
     db = get_database()
     result = await db[COLLECTION_NAME].update_one({"email": email}, {"$set": updates})

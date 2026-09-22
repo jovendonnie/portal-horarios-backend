@@ -1,10 +1,17 @@
 import asyncio
 
 import pytest
+from bson import ObjectId
 from pymongo.errors import DuplicateKeyError
 
 from conftest import mongo_test_session
-from src.models.user import ensure_indexes, find_user_by_email, insert_user, update_user
+from src.models.user import (
+    ensure_indexes,
+    find_user_by_email,
+    find_user_by_id,
+    insert_user,
+    update_user,
+)
 
 
 def _make_user(email: str) -> dict:
@@ -74,5 +81,26 @@ def test_find_user_by_email_returns_none_when_not_found(use_test_db) -> None:
     async def scenario() -> None:
         async with mongo_test_session():
             assert await find_user_by_email("no-existe@hispacontact.com") is None
+
+    asyncio.run(scenario())
+
+
+def test_find_user_by_id_returns_matching_document(use_test_db) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            inserted_id = await insert_user(_make_user("d@hispacontact.com"))
+
+            found = await find_user_by_id(inserted_id)
+
+            assert found is not None
+            assert found["email"] == "d@hispacontact.com"
+
+    asyncio.run(scenario())
+
+
+def test_find_user_by_id_returns_none_when_not_found(use_test_db) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            assert await find_user_by_id(ObjectId()) is None
 
     asyncio.run(scenario())
