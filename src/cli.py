@@ -11,11 +11,23 @@ import re
 import sys
 from typing import Any
 
+from bson import ObjectId
+from bson.errors import InvalidId
+
 from src.core.database import close_mongo_connection, connect_to_mongo
 from src.models.session import delete_sessions_by_user
 from src.models.user import find_user_by_email, update_user
+from src.schemas.employee import EmployeeCreate, EmployeeOut, EmployeeUpdate
 from src.schemas.user import UserCreate
 from src.services.auth_service import EmailAlreadyExistsError, register_user
+from src.services.employee_service import (
+    DuplicateEmployeeError,
+    EmployeeNotFoundError,
+    InvalidPositionError,
+    create_employee,
+    list_employees,
+    update_employee,
+)
 
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
@@ -72,6 +84,19 @@ def _build_parser() -> _ArgumentParser:
     deactivate_user = subparsers.add_parser("deactivate-user", help="Desactiva una cuenta")
     deactivate_user.add_argument("--email", required=True)
 
+    create_employee_parser = subparsers.add_parser("create-employee", help="Crea un empleado")
+    create_employee_parser.add_argument("--name", required=True)
+    create_employee_parser.add_argument("--position", required=True)
+    create_employee_parser.add_argument("--area", required=True)
+
+    subparsers.add_parser("list-employees", help="Lista los empleados")
+
+    update_employee_parser = subparsers.add_parser("update-employee", help="Edita un empleado")
+    update_employee_parser.add_argument("--id", required=True)
+    update_employee_parser.add_argument("--name")
+    update_employee_parser.add_argument("--position")
+    update_employee_parser.add_argument("--area")
+
     return parser
 
 
@@ -110,12 +135,60 @@ async def _deactivate_user(email: str) -> dict[str, Any]:
     return {"email": email, "is_active": False, "sessions_invalidated": sessions_invalidated}
 
 
+def _employee_payload(employee: EmployeeOut) -> dict[str, Any]:
+    return {
+        "id": employee.id,
+        "full_name": employee.full_name,
+        "position": employee.position,
+        "area": employee.area,
+        "is_active": employee.is_active,
+    }
+
+
+async def _create_employee(name: str, position: str, area: str) -> dict[str, Any]:
+    data = EmployeeCreate.model_construct(full_name=name, position=position, area=area)
+    employee = await create_employee({"_id": None}, data)
+    return {"employee": _employee_payload(employee)}
+
+
+async def _list_employees() -> dict[str, Any]:
+    employees = await list_employees()
+    return {"employees": [_employee_payload(employee) for employee in employees]}
+
+
+async def _update_employee(
+    employee_id: str, name: str | None, position: str | None, area: str | None
+) -> dict[str, Any]:
+    try:
+        object_id = ObjectId(employee_id)
+    except InvalidId as exc:
+        raise EmployeeNotFoundError() from exc
+
+    changes_kwargs: dict[str, Any] = {}
+    if name is not None:
+        changes_kwargs["full_name"] = name
+    if position is not None:
+        changes_kwargs["position"] = position
+    if area is not None:
+        changes_kwargs["area"] = area
+    changes = EmployeeUpdate.model_construct(**changes_kwargs)
+
+    employee = await update_employee({"_id": None}, object_id, changes)
+    return {"employee": _employee_payload(employee)}
+
+
 async def _dispatch(args: argparse.Namespace) -> dict[str, Any]:
     if args.command == "create-admin":
         return await _create_admin(args.name, args.email)
     if args.command == "unlock-user":
         return await _unlock_user(args.email)
-    return await _deactivate_user(args.email)
+    if args.command == "deactivate-user":
+        return await _deactivate_user(args.email)
+    if args.command == "create-employee":
+        return await _create_employee(args.name, args.position, args.area)
+    if args.command == "list-employees":
+        return await _list_employees()
+    return await _update_employee(args.id, args.name, args.position, args.area)
 
 
 async def _execute(args: argparse.Namespace) -> int:
@@ -129,6 +202,15 @@ async def _execute(args: argparse.Namespace) -> int:
         return EXIT_CONFLICT
     except _UserNotFoundError:
         _print_error("user_not_found", "No existe una cuenta con ese correo")
+        return EXIT_NOT_FOUND
+    except InvalidPositionError as exc:
+        _print_error("invalid_arguments", str(exc))
+        return EXIT_INVALID_ARGS
+    except DuplicateEmployeeError as exc:
+        _print_error("employee_duplicated", str(exc))
+        return EXIT_CONFLICT
+    except EmployeeNotFoundError as exc:
+        _print_error("employee_not_found", str(exc))
         return EXIT_NOT_FOUND
     except Exception as exc:  # infraestructura/imprevisto
         _print_error("unexpected_error", str(exc))

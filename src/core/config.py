@@ -5,7 +5,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     app_name: str = "Portal Horarios Backend"
-    mongo_uri: str = "mongodb://localhost:27017"
+    mongo_uri: str = "MONGO_URI=mongodb+srv://desarrollo_db_user:odcrCJ4Ae6Wkg3gB@cluster0.a6fysj8.mongodb.net/?appName=Cluster0"
     mongo_db_name: str = "portal_horarios"
 
     max_failed_attempts: int = 5
