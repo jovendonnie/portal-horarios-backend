@@ -35,3 +35,13 @@ class OldScheduleRepository:
             }
         )
 
+    async def buscar_por_importacion(
+        self,
+        importacion_id
+    ):
+
+        return await self.collection.find_one(
+            {
+                "importacion_id": importacion_id
+            }
+        )

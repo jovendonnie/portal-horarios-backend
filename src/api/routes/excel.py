@@ -19,12 +19,3 @@ async def import_employees(
     service = ExcelService(db)
 
     return await service.import_excel(archivo)
-
-
-@router.get("/schedule")
-async def get_current_schedule(
-    db: AsyncIOMotorDatabase = Depends(get_database)
-):
-    service = ExcelService(db)
-
-    return await service.get_current_schedule()

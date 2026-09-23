@@ -1,3 +1,5 @@
+from datetime import datetime, time
+
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 
@@ -44,4 +46,49 @@ class ImportacionRepository:
                     "hasta": hasta
                 }
             }
+        )
+
+    async def buscar_por_fecha(
+        self,
+        fecha
+    ):
+
+        inicio_dia = datetime.combine(
+            fecha.date(),
+            time.min
+        )
+
+        fin_dia = datetime.combine(
+            fecha.date(),
+            time.max
+        )
+
+        return await self.collection.find_one(
+            {
+                "desde": {
+                    "$lte": fin_dia
+                },
+                "$or": [
+                    {
+                        "hasta": None
+                    },
+                    {
+                        "hasta": {
+                            "$gt": inicio_dia
+                        }
+                    }
+                ]
+            },
+            sort=[
+                ("desde", -1)
+            ]
+        )
+
+    async def obtener_primera_importacion(self):
+
+        return await self.collection.find_one(
+            {},
+            sort=[
+                ("desde", 1)
+            ]
         )
