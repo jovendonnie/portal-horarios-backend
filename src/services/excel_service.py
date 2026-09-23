@@ -415,3 +415,76 @@ class ExcelService:
             "horarios": horarios_procesados
         }
 
+    # ==========================
+    # OBTENER HORARIO ACTUAL
+    # ==========================
+
+    async def get_current_schedule(self):
+
+        horarios = await self.schedule_repository.obtener_todos()
+
+        resultado = []
+
+        for horario in horarios:
+
+            usuario_id = horario.get(
+                "usuario_id"
+            )
+
+            usuario = await self.employees_repository.collection.find_one(
+                {
+                    "_id": usuario_id
+                }
+            )
+
+            if not usuario:
+                continue
+
+            resultado.append({
+
+                "usuario_id": str(
+                    usuario_id
+                ),
+
+                "nombre_completo": usuario.get(
+                    "nombre_completo"
+                ),
+
+                "area": usuario.get(
+                    "area"
+                ),
+
+                "cargo": usuario.get(
+                    "cargo"
+                ),
+
+                "correo_electronico": usuario.get(
+                    "correo_electronico"
+                ),
+
+                "lunes": horario.get(
+                    "lunes"
+                ),
+
+                "martes": horario.get(
+                    "martes"
+                ),
+
+                "miercoles": horario.get(
+                    "miercoles"
+                ),
+
+                "jueves": horario.get(
+                    "jueves"
+                ),
+
+                "viernes": horario.get(
+                    "viernes"
+                )
+            })
+
+        return {
+            "vigente": True,
+            "total": len(resultado),
+            "horarios": resultado
+        }
