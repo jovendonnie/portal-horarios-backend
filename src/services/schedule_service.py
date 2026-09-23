@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
@@ -252,4 +252,64 @@ class ScheduleService:
             "hasta": importacion["hasta"],
             "total": len(horarios_dia),
             "horarios": horarios_dia
+        }
+
+    # ==========================
+    # CONSULTAR HORARIO POR RANGO
+    # ==========================
+
+    async def consultar_por_rango(
+        self,
+        desde: str,
+        hasta: str
+    ):
+
+        fecha_desde = datetime.fromisoformat(
+            desde
+        )
+
+        fecha_hasta = datetime.fromisoformat(
+            hasta
+        )
+
+        # ==========================
+        # VALIDAR RANGO
+        # ==========================
+
+        if fecha_desde > fecha_hasta:
+
+            return {
+                "valido": False,
+                "mensaje": "La fecha inicial no puede ser posterior a la fecha final",
+                "dias": []
+            }
+
+        resultados = []
+
+        fecha_actual = fecha_desde
+
+        # ==========================
+        # CONSULTAR CADA FECHA
+        # ==========================
+
+        while fecha_actual.date() <= fecha_hasta.date():
+
+            resultado = await self.consultar_por_fecha(
+                fecha_actual.strftime("%Y-%m-%d")
+            )
+
+            resultados.append(
+                resultado
+            )
+
+            fecha_actual += timedelta(
+                days=1
+            )
+
+        return {
+            "valido": True,
+            "desde": fecha_desde.date(),
+            "hasta": fecha_hasta.date(),
+            "total_dias": len(resultados),
+            "dias": resultados
         }
