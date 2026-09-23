@@ -1,11 +1,15 @@
 import pandas as pd
 
 from io import BytesIO
+from datetime import datetime
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from src.repositories.employees_repository import EmployeesRepository
 from src.repositories.schedule_repository import ScheduleRepository
+from src.repositories.importation_repository import ImportacionRepository
+from src.repositories.old_schedule_repository import OldScheduleRepository
+from src.repositories.old_employee_repository import OldEmployeeRepository
 from src.services.excel_validator import ExcelValidator
 
 
@@ -14,6 +18,9 @@ class ExcelService:
     def __init__(self, db: AsyncIOMotorDatabase):
         self.employees_repository = EmployeesRepository(db)
         self.schedule_repository = ScheduleRepository(db)
+        self.importacion_repository = ImportacionRepository(db)
+        self.old_schedule_repository = OldScheduleRepository(db)
+        self.old_employee_repository = OldEmployeeRepository(db)
 
     async def import_excel(self, archivo):
 
@@ -98,7 +105,7 @@ class ExcelService:
             }
 
         # ==========================
-        # LEER EMPLEADOS
+        # LEER EXCEL
         # ==========================
 
         try:
@@ -108,10 +115,6 @@ class ExcelService:
                 sheet_name="empleados",
                 skiprows=2
             )
-
-            # ==========================
-            # LEER HORARIOS
-            # ==========================
 
             horarios = pd.read_excel(
                 excel,
@@ -153,6 +156,128 @@ class ExcelService:
             }
 
         # ==========================
+        # FECHA DE LA IMPORTACIÓN
+        # ==========================
+
+        fecha_actual = datetime.now()
+
+        # ==========================
+        # OBTENER EMPLEADOS DEL NUEVO EXCEL
+        # ==========================
+
+        empleados_excel = set()
+
+        for _, employee in empleados.iterrows():
+
+            correo = str(
+                employee["Correo electronico"]
+            ).strip()
+
+            empleados_excel.add(correo)
+
+        # ==========================
+        # DETECTAR EMPLEADOS QUE YA NO ESTÁN
+        # ==========================
+
+        empleados_actuales = await self.employees_repository.obtener_todos()
+
+        for empleado_actual in empleados_actuales:
+
+            correo_actual = empleado_actual.get(
+                "correo_electronico"
+            )
+
+            if not correo_actual:
+                continue
+
+            if correo_actual not in empleados_excel:
+
+                empleado_antiguo = empleado_actual.copy()
+
+                # Mongo creará un nuevo _id
+                empleado_antiguo.pop("_id", None)
+
+                # Evitar duplicados en empleados_antiguos
+                existe = await self.old_employee_repository.existe(
+                    correo_electronico=correo_actual
+                )
+
+                if not existe:
+
+                    empleado_antiguo["fecha"] = fecha_actual
+
+                    await self.old_employee_repository.guardar(
+                        empleado_antiguo
+                    )
+
+                # Marcar empleado como inactivo
+                await self.employees_repository.desactivar(
+                    correo_electronico=correo_actual
+                )
+
+        # ==========================
+        # GUARDAR HORARIOS ACTUALES
+        # COMO UN ÚNICO HORARIO ANTIGUO
+        # ==========================
+
+        horarios_actuales = await self.schedule_repository.obtener_todos()
+
+        if horarios_actuales:
+
+            horarios_antiguos = []
+
+            for horario in horarios_actuales:
+
+                horario_antiguo = horario.copy()
+
+                # Mongo creará un nuevo _id
+                horario_antiguo.pop("_id", None)
+
+                horarios_antiguos.append(
+                    horario_antiguo
+                )
+
+            # La importación anterior está dentro
+            # de los horarios actuales
+            importacion_anterior = horarios_antiguos[0].get(
+                "importacion_id"
+            )
+
+            await self.old_schedule_repository.guardar(
+                importacion_id=importacion_anterior,
+                fecha=fecha_actual,
+                horarios=horarios_antiguos
+            )
+
+        # ==========================
+        # ELIMINAR HORARIOS ACTUALES
+        # ==========================
+
+        await self.schedule_repository.eliminar_todos()
+
+        # ==========================
+        # CERRAR IMPORTACIÓN VIGENTE
+        # ==========================
+
+        await self.importacion_repository.cerrar_vigente(
+            hasta=fecha_actual
+        )
+
+        # ==========================
+        # CREAR NUEVA IMPORTACIÓN
+        # ==========================
+
+        importacion = await self.importacion_repository.crear(
+            fecha_subida=fecha_actual,
+            nombre_archivo=nombre_archivo,
+            desde=fecha_actual
+        )
+
+        importacion_id = str(
+            importacion["_id"]
+        )
+
+        # ==========================
         # GUARDAR EMPLEADOS
         # ==========================
 
@@ -186,7 +311,7 @@ class ExcelService:
             employee_ids[nombre] = usuario["_id"]
 
         # ==========================
-        # GUARDAR HORARIOS
+        # GUARDAR HORARIOS ACTUALES
         # ==========================
 
         horarios_procesados = 0
@@ -203,6 +328,8 @@ class ExcelService:
                 continue
 
             horario = {
+
+                "importacion_id": importacion_id,
 
                 "usuario_id": usuario_id,
 
@@ -268,6 +395,7 @@ class ExcelService:
             }
 
             await self.schedule_repository.create_or_update(
+                importacion_id=importacion_id,
                 usuario_id=usuario_id,
                 horario=horario
             )
@@ -280,6 +408,10 @@ class ExcelService:
 
         return {
             "valido": True,
+            "importacion_id": importacion_id,
+            "fecha_subida": fecha_actual,
+            "vigente": True,
             "empleados": len(employee_ids),
             "horarios": horarios_procesados
         }
+

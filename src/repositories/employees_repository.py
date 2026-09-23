@@ -13,6 +13,7 @@ class EmployeesRepository:
         cargo: str,
         correo_electronico: str
     ):
+
         await self.collection.update_one(
             {
                 "nombre_completo": nombre_completo
@@ -22,7 +23,8 @@ class EmployeesRepository:
                     "nombre_completo": nombre_completo,
                     "area": area,
                     "cargo": cargo,
-                    "correo_electronico": correo_electronico
+                    "correo_electronico": correo_electronico,
+                    "activo": True
                 }
             },
             upsert=True
@@ -33,3 +35,26 @@ class EmployeesRepository:
                 "nombre_completo": nombre_completo
             }
         )
+
+    async def obtener_todos(self):
+
+        return await self.collection.find({}).to_list(
+            length=None
+        )
+
+    async def desactivar(
+        self,
+        correo_electronico: str
+    ):
+
+        await self.collection.update_one(
+            {
+                "correo_electronico": correo_electronico
+            },
+            {
+                "$set": {
+                    "activo": False
+                }
+            }
+        )
+

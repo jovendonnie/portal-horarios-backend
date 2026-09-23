@@ -7,3 +7,4 @@ class EmployeeModel(BaseModel):
     area: str
     cargo: str
     correo_electronico: str
+    activo: bool = True
