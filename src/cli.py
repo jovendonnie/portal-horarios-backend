@@ -20,6 +20,7 @@ from src.models.user import find_user_by_email, update_user
 from src.schemas.employee import EmployeeCreate, EmployeeOut, EmployeeUpdate
 from src.schemas.user import UserCreate
 from src.services.auth_service import EmailAlreadyExistsError, register_user
+from src.services import catalog_service
 from src.services.employee_service import (
     DuplicateEmployeeError,
     EmployeeNotFoundError,
@@ -36,6 +37,8 @@ EXIT_UNEXPECTED = 1
 EXIT_CONFLICT = 2
 EXIT_NOT_FOUND = 3
 EXIT_INVALID_ARGS = 4
+
+_ENTITY_CODE = {"Área": "area", "Estado": "status"}
 
 
 class _InvalidArgumentsError(Exception):
@@ -96,6 +99,42 @@ def _build_parser() -> _ArgumentParser:
     update_employee_parser.add_argument("--name")
     update_employee_parser.add_argument("--position")
     update_employee_parser.add_argument("--area")
+
+    create_area_parser = subparsers.add_parser("create-area", help="Crea un Área")
+    create_area_parser.add_argument("--name", required=True)
+
+    list_areas_parser = subparsers.add_parser("list-areas", help="Lista las Áreas")
+    area_filter_group = list_areas_parser.add_mutually_exclusive_group()
+    area_filter_group.add_argument("--enabled", action="store_true", dest="enabled_flag")
+    area_filter_group.add_argument("--disabled", action="store_true", dest="disabled_flag")
+
+    update_area_parser = subparsers.add_parser("update-area", help="Renombra un Área")
+    update_area_parser.add_argument("--id", required=True)
+    update_area_parser.add_argument("--name", required=True)
+
+    enable_area_parser = subparsers.add_parser("enable-area", help="Habilita un Área")
+    enable_area_parser.add_argument("--id", required=True)
+
+    disable_area_parser = subparsers.add_parser("disable-area", help="Deshabilita un Área")
+    disable_area_parser.add_argument("--id", required=True)
+
+    create_status_parser = subparsers.add_parser("create-status", help="Crea un Estado")
+    create_status_parser.add_argument("--name", required=True)
+
+    list_statuses_parser = subparsers.add_parser("list-statuses", help="Lista los Estados")
+    status_filter_group = list_statuses_parser.add_mutually_exclusive_group()
+    status_filter_group.add_argument("--enabled", action="store_true", dest="enabled_flag")
+    status_filter_group.add_argument("--disabled", action="store_true", dest="disabled_flag")
+
+    update_status_parser = subparsers.add_parser("update-status", help="Renombra un Estado")
+    update_status_parser.add_argument("--id", required=True)
+    update_status_parser.add_argument("--name", required=True)
+
+    enable_status_parser = subparsers.add_parser("enable-status", help="Habilita un Estado")
+    enable_status_parser.add_argument("--id", required=True)
+
+    disable_status_parser = subparsers.add_parser("disable-status", help="Deshabilita un Estado")
+    disable_status_parser.add_argument("--id", required=True)
 
     return parser
 
@@ -177,6 +216,66 @@ async def _update_employee(
     return {"employee": _employee_payload(employee)}
 
 
+def _entry_payload(entry: dict[str, Any]) -> dict[str, Any]:
+    return {"id": str(entry["_id"]), "name": entry["name"], "is_enabled": entry["is_enabled"]}
+
+
+async def _count_assigned_stub(_entry_id: Any) -> int:
+    # Placeholder hasta Fase 6 (count_employees_by_area/count_employees_by_status).
+    return 0
+
+
+def _parse_catalog_id(entry_id: str, entity_label: str) -> ObjectId:
+    try:
+        return ObjectId(entry_id)
+    except InvalidId as exc:
+        raise catalog_service.EntryNotFoundError(entity_label) from exc
+
+
+async def _create_catalog_entry(collection_name: str, entity_label: str, name: str) -> dict[str, Any]:
+    entry = await catalog_service.create_entry(collection_name, entity_label, name, {"_id": None})
+    return {"entry": _entry_payload(entry)}
+
+
+async def _list_catalog_entries(collection_name: str, enabled: bool | None) -> dict[str, Any]:
+    entries = await catalog_service.list_entries(collection_name, enabled)
+    return {"entries": [_entry_payload(entry) for entry in entries]}
+
+
+async def _update_catalog_entry(
+    collection_name: str, entity_label: str, entry_id: str, name: str
+) -> dict[str, Any]:
+    entry = await catalog_service.rename_entry(
+        collection_name, entity_label, _parse_catalog_id(entry_id, entity_label), name, {"_id": None}
+    )
+    return {"entry": _entry_payload(entry)}
+
+
+async def _set_catalog_enabled(
+    collection_name: str, entity_label: str, entry_id: str, enabled: bool
+) -> dict[str, Any]:
+    entry, affected = await catalog_service.set_enabled(
+        collection_name,
+        entity_label,
+        _parse_catalog_id(entry_id, entity_label),
+        enabled,
+        {"_id": None},
+        _count_assigned_stub,
+    )
+    payload: dict[str, Any] = {"entry": _entry_payload(entry)}
+    if not enabled:
+        payload["affected_employees"] = affected or 0
+    return payload
+
+
+def _enabled_filter(args: argparse.Namespace) -> bool | None:
+    if getattr(args, "enabled_flag", False):
+        return True
+    if getattr(args, "disabled_flag", False):
+        return False
+    return None
+
+
 async def _dispatch(args: argparse.Namespace) -> dict[str, Any]:
     if args.command == "create-admin":
         return await _create_admin(args.name, args.email)
@@ -188,7 +287,27 @@ async def _dispatch(args: argparse.Namespace) -> dict[str, Any]:
         return await _create_employee(args.name, args.position, args.area)
     if args.command == "list-employees":
         return await _list_employees()
-    return await _update_employee(args.id, args.name, args.position, args.area)
+    if args.command == "update-employee":
+        return await _update_employee(args.id, args.name, args.position, args.area)
+    if args.command == "create-area":
+        return await _create_catalog_entry("areas", "Área", args.name)
+    if args.command == "list-areas":
+        return await _list_catalog_entries("areas", _enabled_filter(args))
+    if args.command == "update-area":
+        return await _update_catalog_entry("areas", "Área", args.id, args.name)
+    if args.command == "enable-area":
+        return await _set_catalog_enabled("areas", "Área", args.id, True)
+    if args.command == "disable-area":
+        return await _set_catalog_enabled("areas", "Área", args.id, False)
+    if args.command == "create-status":
+        return await _create_catalog_entry("estados", "Estado", args.name)
+    if args.command == "list-statuses":
+        return await _list_catalog_entries("estados", _enabled_filter(args))
+    if args.command == "update-status":
+        return await _update_catalog_entry("estados", "Estado", args.id, args.name)
+    if args.command == "enable-status":
+        return await _set_catalog_enabled("estados", "Estado", args.id, True)
+    return await _set_catalog_enabled("estados", "Estado", args.id, False)
 
 
 async def _execute(args: argparse.Namespace) -> int:
@@ -212,6 +331,18 @@ async def _execute(args: argparse.Namespace) -> int:
     except EmployeeNotFoundError as exc:
         _print_error("employee_not_found", str(exc))
         return EXIT_NOT_FOUND
+    except catalog_service.InvalidNameError as exc:
+        _print_error("invalid_name", str(exc))
+        return EXIT_INVALID_ARGS
+    except catalog_service.DuplicateEntryError as exc:
+        _print_error(f"{_ENTITY_CODE[exc.entity_label]}_duplicated", str(exc))
+        return EXIT_CONFLICT
+    except catalog_service.EntryNotFoundError as exc:
+        _print_error(f"{_ENTITY_CODE[exc.entity_label]}_not_found", str(exc))
+        return EXIT_NOT_FOUND
+    except catalog_service.LastEnabledEntryError as exc:
+        _print_error(f"last_enabled_{_ENTITY_CODE[exc.entity_label]}", str(exc))
+        return EXIT_CONFLICT
     except Exception as exc:  # infraestructura/imprevisto
         _print_error("unexpected_error", str(exc))
         return EXIT_UNEXPECTED

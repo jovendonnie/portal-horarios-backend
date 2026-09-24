@@ -3,14 +3,41 @@ import json
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+import pytest
 from bson import ObjectId
 from conftest import mongo_test_session
 
 from src.core.security import hash_password, verify_password
+from src.models.catalog import ensure_indexes as ensure_catalog_indexes
 from src.models.employee import ensure_indexes as ensure_employee_indexes
 from src.models.session import find_session_by_token, insert_session
 from src.models.user import ensure_indexes, find_user_by_email, insert_user
 from src import cli
+
+CATALOG_COMMANDS = [
+    {
+        "create": "create-area",
+        "list": "list-areas",
+        "update": "update-area",
+        "enable": "enable-area",
+        "disable": "disable-area",
+        "collection_name": "areas",
+        "duplicated": "area_duplicated",
+        "not_found": "area_not_found",
+        "last_enabled": "last_enabled_area",
+    },
+    {
+        "create": "create-status",
+        "list": "list-statuses",
+        "update": "update-status",
+        "enable": "enable-status",
+        "disable": "disable-status",
+        "collection_name": "estados",
+        "duplicated": "status_duplicated",
+        "not_found": "status_not_found",
+        "last_enabled": "last_enabled_status",
+    },
+]
 
 
 def _make_user(email: str, **overrides: Any) -> dict[str, Any]:
@@ -35,6 +62,12 @@ def test_help_lists_all_subcommands() -> None:
     assert "create-employee" in help_text
     assert "list-employees" in help_text
     assert "update-employee" in help_text
+    for commands in CATALOG_COMMANDS:
+        assert commands["create"] in help_text
+        assert commands["list"] in help_text
+        assert commands["update"] in help_text
+        assert commands["enable"] in help_text
+        assert commands["disable"] in help_text
 
 
 def test_create_admin_success_returns_ok_and_temporary_password(use_test_db, capsys) -> None:
@@ -330,5 +363,228 @@ def test_update_employee_invalid_position_returns_invalid_arguments_exit_code(us
             payload = json.loads(capsys.readouterr().err)
             assert payload["status"] == "error"
             assert payload["code"] == "invalid_arguments"
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("commands", CATALOG_COMMANDS)
+def test_create_catalog_entry_success(use_test_db, capsys, commands) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await ensure_catalog_indexes(commands["collection_name"])
+
+            exit_code = await cli.run([commands["create"], "--name", "Ventas"])
+
+            assert exit_code == 0
+            payload = json.loads(capsys.readouterr().out)
+            assert payload["status"] == "ok"
+            assert payload["entry"]["name"] == "Ventas"
+            assert payload["entry"]["is_enabled"] is True
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("commands", CATALOG_COMMANDS)
+def test_create_catalog_entry_duplicate_returns_conflict_exit_code(use_test_db, capsys, commands) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await ensure_catalog_indexes(commands["collection_name"])
+            await cli.run([commands["create"], "--name", "Ventas"])
+            capsys.readouterr()
+
+            exit_code = await cli.run([commands["create"], "--name", "Ventas"])
+
+            assert exit_code == 2
+            payload = json.loads(capsys.readouterr().err)
+            assert payload["status"] == "error"
+            assert payload["code"] == commands["duplicated"]
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("commands", CATALOG_COMMANDS)
+def test_create_catalog_entry_invalid_name_returns_invalid_args_exit_code(
+    use_test_db, capsys, commands
+) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            exit_code = await cli.run([commands["create"], "--name", ""])
+
+            assert exit_code == 4
+            payload = json.loads(capsys.readouterr().err)
+            assert payload["status"] == "error"
+            assert payload["code"] == "invalid_name"
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("commands", CATALOG_COMMANDS)
+def test_list_catalog_entries_returns_all(use_test_db, capsys, commands) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await cli.run([commands["create"], "--name", "Ventas"])
+            capsys.readouterr()
+            await cli.run([commands["create"], "--name", "Soporte"])
+            capsys.readouterr()
+
+            exit_code = await cli.run([commands["list"]])
+
+            assert exit_code == 0
+            payload = json.loads(capsys.readouterr().out)
+            assert payload["status"] == "ok"
+            names = {entry["name"] for entry in payload["entries"]}
+            assert names == {"Ventas", "Soporte"}
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("commands", CATALOG_COMMANDS)
+def test_list_catalog_entries_filters_by_disabled(use_test_db, capsys, commands) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await cli.run([commands["create"], "--name", "Ventas"])
+            capsys.readouterr()
+            await cli.run([commands["create"], "--name", "Soporte"])
+            created = json.loads(capsys.readouterr().out)["entry"]
+            await cli.run([commands["disable"], "--id", created["id"]])
+            capsys.readouterr()
+
+            exit_code = await cli.run([commands["list"], "--disabled"])
+
+            assert exit_code == 0
+            payload = json.loads(capsys.readouterr().out)
+            names = {entry["name"] for entry in payload["entries"]}
+            assert names == {"Soporte"}
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("commands", CATALOG_COMMANDS)
+def test_update_catalog_entry_success(use_test_db, capsys, commands) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await cli.run([commands["create"], "--name", "Ventas"])
+            created = json.loads(capsys.readouterr().out)["entry"]
+
+            exit_code = await cli.run(
+                [commands["update"], "--id", created["id"], "--name", "Comercial"]
+            )
+
+            assert exit_code == 0
+            payload = json.loads(capsys.readouterr().out)
+            assert payload["status"] == "ok"
+            assert payload["entry"]["name"] == "Comercial"
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("commands", CATALOG_COMMANDS)
+def test_update_catalog_entry_not_found_returns_not_found_exit_code(
+    use_test_db, capsys, commands
+) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            exit_code = await cli.run(
+                [commands["update"], "--id", str(ObjectId()), "--name", "Comercial"]
+            )
+
+            assert exit_code == 3
+            payload = json.loads(capsys.readouterr().err)
+            assert payload["status"] == "error"
+            assert payload["code"] == commands["not_found"]
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("commands", CATALOG_COMMANDS)
+def test_disable_catalog_entry_success_returns_affected_employees(
+    use_test_db, capsys, commands
+) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await cli.run([commands["create"], "--name", "Ventas"])
+            created = json.loads(capsys.readouterr().out)["entry"]
+            await cli.run([commands["create"], "--name", "Soporte"])
+            capsys.readouterr()
+
+            exit_code = await cli.run([commands["disable"], "--id", created["id"]])
+
+            assert exit_code == 0
+            payload = json.loads(capsys.readouterr().out)
+            assert payload["status"] == "ok"
+            assert payload["entry"]["is_enabled"] is False
+            assert payload["affected_employees"] == 0
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("commands", CATALOG_COMMANDS)
+def test_disable_catalog_entry_last_enabled_returns_conflict_exit_code(
+    use_test_db, capsys, commands
+) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await cli.run([commands["create"], "--name", "Ventas"])
+            created = json.loads(capsys.readouterr().out)["entry"]
+
+            exit_code = await cli.run([commands["disable"], "--id", created["id"]])
+
+            assert exit_code == 2
+            payload = json.loads(capsys.readouterr().err)
+            assert payload["status"] == "error"
+            assert payload["code"] == commands["last_enabled"]
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("commands", CATALOG_COMMANDS)
+def test_disable_catalog_entry_not_found_returns_not_found_exit_code(
+    use_test_db, capsys, commands
+) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            exit_code = await cli.run([commands["disable"], "--id", str(ObjectId())])
+
+            assert exit_code == 3
+            payload = json.loads(capsys.readouterr().err)
+            assert payload["status"] == "error"
+            assert payload["code"] == commands["not_found"]
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("commands", CATALOG_COMMANDS)
+def test_enable_catalog_entry_success(use_test_db, capsys, commands) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await cli.run([commands["create"], "--name", "Ventas"])
+            created = json.loads(capsys.readouterr().out)["entry"]
+            await cli.run([commands["create"], "--name", "Soporte"])
+            capsys.readouterr()
+            await cli.run([commands["disable"], "--id", created["id"]])
+            capsys.readouterr()
+
+            exit_code = await cli.run([commands["enable"], "--id", created["id"]])
+
+            assert exit_code == 0
+            payload = json.loads(capsys.readouterr().out)
+            assert payload["status"] == "ok"
+            assert payload["entry"]["is_enabled"] is True
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("commands", CATALOG_COMMANDS)
+def test_enable_catalog_entry_not_found_returns_not_found_exit_code(
+    use_test_db, capsys, commands
+) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            exit_code = await cli.run([commands["enable"], "--id", str(ObjectId())])
+
+            assert exit_code == 3
+            payload = json.loads(capsys.readouterr().err)
+            assert payload["status"] == "error"
+            assert payload["code"] == commands["not_found"]
 
     asyncio.run(scenario())
