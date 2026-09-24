@@ -7,6 +7,8 @@ from src.repositories.old_schedule_repository import OldScheduleRepository
 from src.repositories.schedule_repository import ScheduleRepository
 from src.repositories.employees_repository import EmployeesRepository
 
+from src.services.schedule_filter_service import ScheduleFilterService
+
 
 class ScheduleService:
 
@@ -20,11 +22,17 @@ class ScheduleService:
 
         self.employees_repository = EmployeesRepository(db)
 
+        self.filter_service = ScheduleFilterService()
+
     # ==========================
     # OBTENER HORARIO ACTUAL
     # ==========================
 
-    async def obtener_horario_actual(self):
+    async def obtener_horario_actual(
+        self,
+        areas=None,
+        cargos=None
+    ):
 
         horarios = await self.schedule_repository.obtener_todos()
 
@@ -32,7 +40,9 @@ class ScheduleService:
 
         for horario in horarios:
 
-            usuario_id = horario.get("usuario_id")
+            usuario_id = horario.get(
+                "usuario_id"
+            )
 
             usuario = await self.employees_repository.collection.find_one(
                 {
@@ -45,16 +55,44 @@ class ScheduleService:
 
             resultado.append({
                 "usuario_id": str(usuario_id),
-                "nombre_completo": usuario.get("nombre_completo"),
-                "area": usuario.get("area"),
-                "cargo": usuario.get("cargo"),
-                "correo_electronico": usuario.get("correo_electronico"),
-                "lunes": horario.get("lunes"),
-                "martes": horario.get("martes"),
-                "miercoles": horario.get("miercoles"),
-                "jueves": horario.get("jueves"),
-                "viernes": horario.get("viernes")
+                "nombre_completo": usuario.get(
+                    "nombre_completo"
+                ),
+                "area": usuario.get(
+                    "area"
+                ),
+                "cargo": usuario.get(
+                    "cargo"
+                ),
+                "correo_electronico": usuario.get(
+                    "correo_electronico"
+                ),
+                "lunes": horario.get(
+                    "lunes"
+                ),
+                "martes": horario.get(
+                    "martes"
+                ),
+                "miercoles": horario.get(
+                    "miercoles"
+                ),
+                "jueves": horario.get(
+                    "jueves"
+                ),
+                "viernes": horario.get(
+                    "viernes"
+                )
             })
+
+        # ==========================
+        # APLICAR FILTROS
+        # ==========================
+
+        resultado = self.filter_service.filtrar(
+            horarios=resultado,
+            areas=areas,
+            cargos=cargos
+        )
 
         return {
             "vigente": True,
@@ -68,10 +106,14 @@ class ScheduleService:
 
     async def consultar_por_fecha(
         self,
-        fecha: str
+        fecha: str,
+        areas=None,
+        cargos=None
     ):
 
-        fecha = datetime.fromisoformat(fecha)
+        fecha = datetime.fromisoformat(
+            fecha
+        )
 
         # ==========================
         # DETERMINAR DÍA DE LA SEMANA
@@ -159,7 +201,10 @@ class ScheduleService:
 
         if importacion["vigente"]:
 
-            resultado_actual = await self.obtener_horario_actual()
+            resultado_actual = await self.obtener_horario_actual(
+                areas=areas,
+                cargos=cargos
+            )
 
             horarios_dia = []
 
@@ -232,14 +277,32 @@ class ScheduleService:
 
             horarios_dia.append({
                 "usuario_id": str(usuario_id),
-                "nombre_completo": usuario.get("nombre_completo"),
-                "area": usuario.get("area"),
-                "cargo": usuario.get("cargo"),
-                "correo_electronico": usuario.get("correo_electronico"),
+                "nombre_completo": usuario.get(
+                    "nombre_completo"
+                ),
+                "area": usuario.get(
+                    "area"
+                ),
+                "cargo": usuario.get(
+                    "cargo"
+                ),
+                "correo_electronico": usuario.get(
+                    "correo_electronico"
+                ),
                 "entrada": horario[dia]["entrada"],
                 "salida": horario[dia]["salida"],
                 "estado": horario[dia]["estado"]
             })
+
+        # ==========================
+        # APLICAR FILTROS
+        # ==========================
+
+        horarios_dia = self.filter_service.filtrar(
+            horarios=horarios_dia,
+            areas=areas,
+            cargos=cargos
+        )
 
         return {
             "fecha": fecha.date(),
@@ -261,7 +324,9 @@ class ScheduleService:
     async def consultar_por_rango(
         self,
         desde: str,
-        hasta: str
+        hasta: str,
+        areas=None,
+        cargos=None
     ):
 
         fecha_desde = datetime.fromisoformat(
@@ -295,7 +360,11 @@ class ScheduleService:
         while fecha_actual.date() <= fecha_hasta.date():
 
             resultado = await self.consultar_por_fecha(
-                fecha_actual.strftime("%Y-%m-%d")
+                fecha=fecha_actual.strftime(
+                    "%Y-%m-%d"
+                ),
+                areas=areas,
+                cargos=cargos
             )
 
             resultados.append(
