@@ -8,6 +8,7 @@ from bson import ObjectId
 from conftest import mongo_test_session
 
 from src.core.security import hash_password, verify_password
+from src.models import catalog as catalog_model
 from src.models.catalog import ensure_indexes as ensure_catalog_indexes
 from src.models.employee import ensure_indexes as ensure_employee_indexes
 from src.models.session import find_session_by_token, insert_session
@@ -52,6 +53,24 @@ def _make_user(email: str, **overrides: Any) -> dict[str, Any]:
     return document
 
 
+async def _seed_catalog_entry(collection_name: str, name: str) -> str:
+    """Siembra una entrada de catálogo directamente vía el modelo (sin pasar por la CLI)."""
+    entry_id = await catalog_model.insert_entry(
+        collection_name, name, "admin-id", datetime.now(timezone.utc)
+    )
+    return str(entry_id)
+
+
+async def _seed_disabled_catalog_entry(collection_name: str, name: str) -> str:
+    """Siembra una entrada de catálogo ya deshabilitada (necesita otra habilitada para no violar la regla de última entrada)."""
+    await _seed_catalog_entry(collection_name, "Otra habilitada")
+    entry_id = await _seed_catalog_entry(collection_name, name)
+    await catalog_model.set_entry_enabled(
+        collection_name, ObjectId(entry_id), False, "admin-id", datetime.now(timezone.utc)
+    )
+    return entry_id
+
+
 def test_help_lists_all_subcommands() -> None:
     parser = cli._build_parser()
     help_text = parser.format_help()
@@ -62,6 +81,7 @@ def test_help_lists_all_subcommands() -> None:
     assert "create-employee" in help_text
     assert "list-employees" in help_text
     assert "update-employee" in help_text
+    assert "set-employee-status" in help_text
     for commands in CATALOG_COMMANDS:
         assert commands["create"] in help_text
         assert commands["list"] in help_text
@@ -230,9 +250,21 @@ def test_create_employee_success_returns_ok_and_employee(use_test_db, capsys) ->
     async def scenario() -> None:
         async with mongo_test_session():
             await ensure_employee_indexes()
+            await _seed_catalog_entry("areas", "Ventas")
+            await _seed_catalog_entry("estados", "Presencial")
 
             exit_code = await cli.run(
-                ["create-employee", "--name", "Carla Gómez", "--position", "lider", "--area", "Ventas"]
+                [
+                    "create-employee",
+                    "--name",
+                    "Carla Gómez",
+                    "--position",
+                    "lider",
+                    "--area",
+                    "Ventas",
+                    "--status",
+                    "Presencial",
+                ]
             )
 
             assert exit_code == 0
@@ -241,6 +273,7 @@ def test_create_employee_success_returns_ok_and_employee(use_test_db, capsys) ->
             assert payload["employee"]["full_name"] == "Carla Gómez"
             assert payload["employee"]["position"] == "lider"
             assert payload["employee"]["area"] == "Ventas"
+            assert payload["employee"]["status"] == "Presencial"
             assert payload["employee"]["is_active"] is True
 
     asyncio.run(scenario())
@@ -250,16 +283,25 @@ def test_create_employee_duplicate_returns_conflict_exit_code(use_test_db, capsy
     async def scenario() -> None:
         async with mongo_test_session():
             await ensure_employee_indexes()
+            await _seed_catalog_entry("areas", "Ventas")
+            await _seed_catalog_entry("estados", "Presencial")
 
-            first = await cli.run(
-                ["create-employee", "--name", "Carla Gómez", "--position", "lider", "--area", "Ventas"]
-            )
+            create_args = [
+                "create-employee",
+                "--name",
+                "Carla Gómez",
+                "--position",
+                "lider",
+                "--area",
+                "Ventas",
+                "--status",
+                "Presencial",
+            ]
+            first = await cli.run(create_args)
             assert first == 0
             capsys.readouterr()
 
-            second = await cli.run(
-                ["create-employee", "--name", "Carla Gómez", "--position", "lider", "--area", "Ventas"]
-            )
+            second = await cli.run(create_args)
 
             assert second == 2
             payload = json.loads(capsys.readouterr().err)
@@ -272,8 +314,21 @@ def test_create_employee_duplicate_returns_conflict_exit_code(use_test_db, capsy
 def test_create_employee_invalid_position_returns_invalid_arguments_exit_code(use_test_db, capsys) -> None:
     async def scenario() -> None:
         async with mongo_test_session():
+            await _seed_catalog_entry("areas", "Ventas")
+            await _seed_catalog_entry("estados", "Presencial")
+
             exit_code = await cli.run(
-                ["create-employee", "--name", "Carla Gómez", "--position", "gerente", "--area", "Ventas"]
+                [
+                    "create-employee",
+                    "--name",
+                    "Carla Gómez",
+                    "--position",
+                    "gerente",
+                    "--area",
+                    "Ventas",
+                    "--status",
+                    "Presencial",
+                ]
             )
 
             assert exit_code == 4
@@ -285,11 +340,135 @@ def test_create_employee_invalid_position_returns_invalid_arguments_exit_code(us
     asyncio.run(scenario())
 
 
+def test_create_employee_invalid_area_returns_invalid_arguments_exit_code(use_test_db, capsys) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await _seed_catalog_entry("estados", "Presencial")
+
+            exit_code = await cli.run(
+                [
+                    "create-employee",
+                    "--name",
+                    "Carla Gómez",
+                    "--position",
+                    "lider",
+                    "--area",
+                    "NoExiste",
+                    "--status",
+                    "Presencial",
+                ]
+            )
+
+            assert exit_code == 4
+            payload = json.loads(capsys.readouterr().err)
+            assert payload["status"] == "error"
+            assert payload["code"] == "invalid_area"
+
+    asyncio.run(scenario())
+
+
+def test_create_employee_disabled_area_returns_invalid_arguments_exit_code(use_test_db, capsys) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await _seed_disabled_catalog_entry("areas", "Ventas")
+            await _seed_catalog_entry("estados", "Presencial")
+
+            exit_code = await cli.run(
+                [
+                    "create-employee",
+                    "--name",
+                    "Carla Gómez",
+                    "--position",
+                    "lider",
+                    "--area",
+                    "Ventas",
+                    "--status",
+                    "Presencial",
+                ]
+            )
+
+            assert exit_code == 4
+            payload = json.loads(capsys.readouterr().err)
+            assert payload["status"] == "error"
+            assert payload["code"] == "invalid_area"
+
+    asyncio.run(scenario())
+
+
+def test_create_employee_invalid_status_returns_invalid_arguments_exit_code(use_test_db, capsys) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await _seed_catalog_entry("areas", "Ventas")
+
+            exit_code = await cli.run(
+                [
+                    "create-employee",
+                    "--name",
+                    "Carla Gómez",
+                    "--position",
+                    "lider",
+                    "--area",
+                    "Ventas",
+                    "--status",
+                    "NoExiste",
+                ]
+            )
+
+            assert exit_code == 4
+            payload = json.loads(capsys.readouterr().err)
+            assert payload["status"] == "error"
+            assert payload["code"] == "invalid_status"
+
+    asyncio.run(scenario())
+
+
+def test_create_employee_disabled_status_returns_invalid_arguments_exit_code(use_test_db, capsys) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await _seed_catalog_entry("areas", "Ventas")
+            await _seed_disabled_catalog_entry("estados", "Presencial")
+
+            exit_code = await cli.run(
+                [
+                    "create-employee",
+                    "--name",
+                    "Carla Gómez",
+                    "--position",
+                    "lider",
+                    "--area",
+                    "Ventas",
+                    "--status",
+                    "Presencial",
+                ]
+            )
+
+            assert exit_code == 4
+            payload = json.loads(capsys.readouterr().err)
+            assert payload["status"] == "error"
+            assert payload["code"] == "invalid_status"
+
+    asyncio.run(scenario())
+
+
 def test_list_employees_returns_all_existing(use_test_db, capsys) -> None:
     async def scenario() -> None:
         async with mongo_test_session():
+            await _seed_catalog_entry("areas", "Ventas")
+            await _seed_catalog_entry("areas", "RRHH")
+            await _seed_catalog_entry("estados", "Presencial")
+
             await cli.run(
-                ["create-employee", "--name", "Empleado Uno", "--position", "lider", "--area", "Ventas"]
+                [
+                    "create-employee",
+                    "--name",
+                    "Empleado Uno",
+                    "--position",
+                    "lider",
+                    "--area",
+                    "Ventas",
+                    "--status",
+                    "Presencial",
+                ]
             )
             capsys.readouterr()
             await cli.run(
@@ -301,6 +480,8 @@ def test_list_employees_returns_all_existing(use_test_db, capsys) -> None:
                     "recursos_humanos",
                     "--area",
                     "RRHH",
+                    "--status",
+                    "Presencial",
                 ]
             )
             capsys.readouterr()
@@ -319,8 +500,22 @@ def test_list_employees_returns_all_existing(use_test_db, capsys) -> None:
 def test_update_employee_success_returns_updated_fields(use_test_db, capsys) -> None:
     async def scenario() -> None:
         async with mongo_test_session():
+            await _seed_catalog_entry("areas", "Ventas")
+            await _seed_catalog_entry("areas", "Marketing")
+            await _seed_catalog_entry("estados", "Presencial")
+
             await cli.run(
-                ["create-employee", "--name", "Carla Gómez", "--position", "lider", "--area", "Ventas"]
+                [
+                    "create-employee",
+                    "--name",
+                    "Carla Gómez",
+                    "--position",
+                    "lider",
+                    "--area",
+                    "Ventas",
+                    "--status",
+                    "Presencial",
+                ]
             )
             created = json.loads(capsys.readouterr().out)["employee"]
 
@@ -332,6 +527,7 @@ def test_update_employee_success_returns_updated_fields(use_test_db, capsys) -> 
             assert payload["employee"]["area"] == "Marketing"
             assert payload["employee"]["full_name"] == "Carla Gómez"
             assert payload["employee"]["position"] == "lider"
+            assert payload["employee"]["status"] == "Presencial"
 
     asyncio.run(scenario())
 
@@ -339,6 +535,8 @@ def test_update_employee_success_returns_updated_fields(use_test_db, capsys) -> 
 def test_update_employee_not_found_returns_not_found_exit_code(use_test_db, capsys) -> None:
     async def scenario() -> None:
         async with mongo_test_session():
+            await _seed_catalog_entry("areas", "Marketing")
+
             exit_code = await cli.run(["update-employee", "--id", str(ObjectId()), "--area", "Marketing"])
 
             assert exit_code == 3
@@ -352,8 +550,21 @@ def test_update_employee_not_found_returns_not_found_exit_code(use_test_db, caps
 def test_update_employee_invalid_position_returns_invalid_arguments_exit_code(use_test_db, capsys) -> None:
     async def scenario() -> None:
         async with mongo_test_session():
+            await _seed_catalog_entry("areas", "Ventas")
+            await _seed_catalog_entry("estados", "Presencial")
+
             await cli.run(
-                ["create-employee", "--name", "Carla Gómez", "--position", "lider", "--area", "Ventas"]
+                [
+                    "create-employee",
+                    "--name",
+                    "Carla Gómez",
+                    "--position",
+                    "lider",
+                    "--area",
+                    "Ventas",
+                    "--status",
+                    "Presencial",
+                ]
             )
             created = json.loads(capsys.readouterr().out)["employee"]
 
@@ -363,6 +574,191 @@ def test_update_employee_invalid_position_returns_invalid_arguments_exit_code(us
             payload = json.loads(capsys.readouterr().err)
             assert payload["status"] == "error"
             assert payload["code"] == "invalid_arguments"
+
+    asyncio.run(scenario())
+
+
+def test_update_employee_invalid_area_returns_invalid_arguments_exit_code(use_test_db, capsys) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await _seed_catalog_entry("areas", "Ventas")
+            await _seed_catalog_entry("estados", "Presencial")
+
+            await cli.run(
+                [
+                    "create-employee",
+                    "--name",
+                    "Carla Gómez",
+                    "--position",
+                    "lider",
+                    "--area",
+                    "Ventas",
+                    "--status",
+                    "Presencial",
+                ]
+            )
+            created = json.loads(capsys.readouterr().out)["employee"]
+
+            exit_code = await cli.run(["update-employee", "--id", created["id"], "--area", "NoExiste"])
+
+            assert exit_code == 4
+            payload = json.loads(capsys.readouterr().err)
+            assert payload["status"] == "error"
+            assert payload["code"] == "invalid_area"
+
+    asyncio.run(scenario())
+
+
+def test_update_employee_disabled_area_returns_invalid_arguments_exit_code(use_test_db, capsys) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await _seed_catalog_entry("areas", "Ventas")
+            await _seed_catalog_entry("estados", "Presencial")
+            await _seed_disabled_catalog_entry("areas", "Marketing")
+
+            await cli.run(
+                [
+                    "create-employee",
+                    "--name",
+                    "Carla Gómez",
+                    "--position",
+                    "lider",
+                    "--area",
+                    "Ventas",
+                    "--status",
+                    "Presencial",
+                ]
+            )
+            created = json.loads(capsys.readouterr().out)["employee"]
+
+            exit_code = await cli.run(["update-employee", "--id", created["id"], "--area", "Marketing"])
+
+            assert exit_code == 4
+            payload = json.loads(capsys.readouterr().err)
+            assert payload["status"] == "error"
+            assert payload["code"] == "invalid_area"
+
+    asyncio.run(scenario())
+
+
+def test_set_employee_status_success_returns_ok_and_updated_status(use_test_db, capsys) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await _seed_catalog_entry("areas", "Ventas")
+            await _seed_catalog_entry("estados", "Presencial")
+            await _seed_catalog_entry("estados", "Vacaciones")
+
+            await cli.run(
+                [
+                    "create-employee",
+                    "--name",
+                    "Carla Gómez",
+                    "--position",
+                    "lider",
+                    "--area",
+                    "Ventas",
+                    "--status",
+                    "Presencial",
+                ]
+            )
+            created = json.loads(capsys.readouterr().out)["employee"]
+
+            exit_code = await cli.run(
+                ["set-employee-status", "--id", created["id"], "--status", "Vacaciones"]
+            )
+
+            assert exit_code == 0
+            payload = json.loads(capsys.readouterr().out)
+            assert payload["status"] == "ok"
+            assert payload["employee"]["id"] == created["id"]
+            assert payload["employee"]["status"] == "Vacaciones"
+            assert payload["employee"]["status_updated_at"] is not None
+            assert payload["employee"]["status_updated_by"] is None
+
+    asyncio.run(scenario())
+
+
+def test_set_employee_status_not_found_returns_not_found_exit_code(use_test_db, capsys) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await _seed_catalog_entry("estados", "Vacaciones")
+
+            exit_code = await cli.run(
+                ["set-employee-status", "--id", str(ObjectId()), "--status", "Vacaciones"]
+            )
+
+            assert exit_code == 3
+            payload = json.loads(capsys.readouterr().err)
+            assert payload["status"] == "error"
+            assert payload["code"] == "employee_not_found"
+
+    asyncio.run(scenario())
+
+
+def test_set_employee_status_invalid_status_returns_invalid_arguments_exit_code(use_test_db, capsys) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await _seed_catalog_entry("areas", "Ventas")
+            await _seed_catalog_entry("estados", "Presencial")
+
+            await cli.run(
+                [
+                    "create-employee",
+                    "--name",
+                    "Carla Gómez",
+                    "--position",
+                    "lider",
+                    "--area",
+                    "Ventas",
+                    "--status",
+                    "Presencial",
+                ]
+            )
+            created = json.loads(capsys.readouterr().out)["employee"]
+
+            exit_code = await cli.run(
+                ["set-employee-status", "--id", created["id"], "--status", "NoExiste"]
+            )
+
+            assert exit_code == 4
+            payload = json.loads(capsys.readouterr().err)
+            assert payload["status"] == "error"
+            assert payload["code"] == "invalid_status"
+
+    asyncio.run(scenario())
+
+
+def test_set_employee_status_disabled_status_returns_invalid_arguments_exit_code(use_test_db, capsys) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await _seed_catalog_entry("areas", "Ventas")
+            await _seed_catalog_entry("estados", "Presencial")
+
+            await cli.run(
+                [
+                    "create-employee",
+                    "--name",
+                    "Carla Gómez",
+                    "--position",
+                    "lider",
+                    "--area",
+                    "Ventas",
+                    "--status",
+                    "Presencial",
+                ]
+            )
+            created = json.loads(capsys.readouterr().out)["employee"]
+
+            await _seed_disabled_catalog_entry("estados", "Vacaciones")
+
+            exit_code = await cli.run(
+                ["set-employee-status", "--id", created["id"], "--status", "Vacaciones"]
+            )
+
+            assert exit_code == 4
+            payload = json.loads(capsys.readouterr().err)
+            assert payload["status"] == "error"
+            assert payload["code"] == "invalid_status"
 
     asyncio.run(scenario())
 

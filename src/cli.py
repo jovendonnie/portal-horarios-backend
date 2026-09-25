@@ -9,12 +9,14 @@ import asyncio
 import json
 import re
 import sys
+from datetime import datetime, timezone
 from typing import Any
 
 from bson import ObjectId
 from bson.errors import InvalidId
 
 from src.core.database import close_mongo_connection, connect_to_mongo
+from src.models.catalog import find_entry_by_name
 from src.models.session import delete_sessions_by_user
 from src.models.user import find_user_by_email, update_user
 from src.schemas.employee import EmployeeCreate, EmployeeOut, EmployeeUpdate
@@ -24,10 +26,13 @@ from src.services import catalog_service
 from src.services.employee_service import (
     DuplicateEmployeeError,
     EmployeeNotFoundError,
+    InvalidAreaError,
     InvalidPositionError,
+    InvalidStatusError,
     create_employee,
     list_employees,
     update_employee,
+    update_employee_status,
 )
 
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
@@ -91,6 +96,7 @@ def _build_parser() -> _ArgumentParser:
     create_employee_parser.add_argument("--name", required=True)
     create_employee_parser.add_argument("--position", required=True)
     create_employee_parser.add_argument("--area", required=True)
+    create_employee_parser.add_argument("--status", required=True)
 
     subparsers.add_parser("list-employees", help="Lista los empleados")
 
@@ -99,6 +105,12 @@ def _build_parser() -> _ArgumentParser:
     update_employee_parser.add_argument("--name")
     update_employee_parser.add_argument("--position")
     update_employee_parser.add_argument("--area")
+
+    set_employee_status_parser = subparsers.add_parser(
+        "set-employee-status", help="Actualiza el Estado actual de un empleado"
+    )
+    set_employee_status_parser.add_argument("--id", required=True)
+    set_employee_status_parser.add_argument("--status", required=True)
 
     create_area_parser = subparsers.add_parser("create-area", help="Crea un Área")
     create_area_parser.add_argument("--name", required=True)
@@ -180,12 +192,40 @@ def _employee_payload(employee: EmployeeOut) -> dict[str, Any]:
         "full_name": employee.full_name,
         "position": employee.position,
         "area": employee.area,
+        "status": employee.status_name,
         "is_active": employee.is_active,
     }
 
 
-async def _create_employee(name: str, position: str, area: str) -> dict[str, Any]:
-    data = EmployeeCreate.model_construct(full_name=name, position=position, area=area)
+def _employee_status_payload(employee: EmployeeOut) -> dict[str, Any]:
+    return {
+        "id": employee.id,
+        "status": employee.status_name,
+        "status_updated_at": employee.status_updated_at.isoformat()
+        if employee.status_updated_at is not None
+        else None,
+        "status_updated_by": employee.status_updated_by,
+    }
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+async def _resolve_catalog_id(collection_name: str, name: str, error_cls: type[Exception]) -> str:
+    """Resuelve un nombre de Área/Estado a su id (decisión 11, plan.md sección 6): la CLI recibe nombres, no ObjectIds."""
+    entry = await find_entry_by_name(collection_name, name)
+    if entry is None or not entry["is_enabled"]:
+        raise error_cls()
+    return str(entry["_id"])
+
+
+async def _create_employee(name: str, position: str, area: str, status: str) -> dict[str, Any]:
+    area_id = await _resolve_catalog_id("areas", area, InvalidAreaError)
+    status_id = await _resolve_catalog_id("estados", status, InvalidStatusError)
+    data = EmployeeCreate.model_construct(
+        full_name=name, position=position, area_id=area_id, status_id=status_id
+    )
     employee = await create_employee({"_id": None}, data)
     return {"employee": _employee_payload(employee)}
 
@@ -209,11 +249,22 @@ async def _update_employee(
     if position is not None:
         changes_kwargs["position"] = position
     if area is not None:
-        changes_kwargs["area"] = area
+        changes_kwargs["area_id"] = await _resolve_catalog_id("areas", area, InvalidAreaError)
     changes = EmployeeUpdate.model_construct(**changes_kwargs)
 
     employee = await update_employee({"_id": None}, object_id, changes)
     return {"employee": _employee_payload(employee)}
+
+
+async def _set_employee_status(employee_id: str, status: str) -> dict[str, Any]:
+    try:
+        object_id = ObjectId(employee_id)
+    except InvalidId as exc:
+        raise EmployeeNotFoundError() from exc
+
+    status_id = await _resolve_catalog_id("estados", status, InvalidStatusError)
+    employee = await update_employee_status(object_id, status_id, {"_id": None}, _utcnow())
+    return {"employee": _employee_status_payload(employee)}
 
 
 def _entry_payload(entry: dict[str, Any]) -> dict[str, Any]:
@@ -284,11 +335,13 @@ async def _dispatch(args: argparse.Namespace) -> dict[str, Any]:
     if args.command == "deactivate-user":
         return await _deactivate_user(args.email)
     if args.command == "create-employee":
-        return await _create_employee(args.name, args.position, args.area)
+        return await _create_employee(args.name, args.position, args.area, args.status)
     if args.command == "list-employees":
         return await _list_employees()
     if args.command == "update-employee":
         return await _update_employee(args.id, args.name, args.position, args.area)
+    if args.command == "set-employee-status":
+        return await _set_employee_status(args.id, args.status)
     if args.command == "create-area":
         return await _create_catalog_entry("areas", "Área", args.name)
     if args.command == "list-areas":
@@ -331,6 +384,12 @@ async def _execute(args: argparse.Namespace) -> int:
     except EmployeeNotFoundError as exc:
         _print_error("employee_not_found", str(exc))
         return EXIT_NOT_FOUND
+    except InvalidAreaError as exc:
+        _print_error("invalid_area", str(exc))
+        return EXIT_INVALID_ARGS
+    except InvalidStatusError as exc:
+        _print_error("invalid_status", str(exc))
+        return EXIT_INVALID_ARGS
     except catalog_service.InvalidNameError as exc:
         _print_error("invalid_name", str(exc))
         return EXIT_INVALID_ARGS

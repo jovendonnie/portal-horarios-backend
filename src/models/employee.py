@@ -63,3 +63,30 @@ async def update_employee_fields(employee_id: Any, updates: dict[str, Any]) -> b
         {"_id": employee_id}, {"$set": _trim_identity_fields(updates)}
     )
     return result.modified_count > 0
+
+
+async def count_employees_by_area(area_id: Any) -> int:
+    db = get_database()
+    return await db[COLLECTION_NAME].count_documents({"area_id": area_id})
+
+
+async def count_employees_by_status(estado_id: Any) -> int:
+    db = get_database()
+    return await db[COLLECTION_NAME].count_documents({"estado_id": estado_id})
+
+
+async def update_employee_status_fields(
+    employee_id: Any, estado_id: Any, actor_id: Any, ahora: datetime
+) -> bool:
+    db = get_database()
+    result = await db[COLLECTION_NAME].update_one(
+        {"_id": employee_id},
+        {
+            "$set": {
+                "estado_id": estado_id,
+                "estado_actualizado_en": ahora,
+                "estado_actualizado_por": actor_id,
+            }
+        },
+    )
+    return result.modified_count > 0
