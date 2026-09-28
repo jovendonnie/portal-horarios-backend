@@ -5,11 +5,14 @@ from bson import ObjectId
 
 from conftest import mongo_test_session
 from src.models.catalog import ensure_indexes
+from src.models.history import list_entries as list_history_entries
 from src.services import catalog_service
 
-ACTOR = {"_id": ObjectId()}
+ACTOR = {"_id": ObjectId(), "full_name": "Admin Actor"}
 
 CATALOGS = [("areas", "Área"), ("estados", "Estado")]
+
+_ENTITY_TYPES = {"areas": "area", "estados": "status"}
 
 
 async def _count_assigned_stub(entry_id) -> int:
@@ -341,5 +344,185 @@ def test_set_enabled_enable_again(use_test_db, collection_name, entity_label) ->
 
             assert updated["is_enabled"] is True
             assert affected is None
+
+    asyncio.run(scenario())
+
+
+# --- Auditoría del historial en create_entry / rename_entry / set_enabled (T025-T028) ---
+
+
+@pytest.mark.parametrize("collection_name,entity_label", CATALOGS)
+def test_create_entry_generates_create_history_entry(
+    use_test_db, collection_name, entity_label
+) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await ensure_indexes(collection_name)
+
+            entry = await catalog_service.create_entry(
+                collection_name, entity_label, "Ventas", ACTOR
+            )
+
+            entries = await list_history_entries(
+                {"entity_type": _ENTITY_TYPES[collection_name], "entity_id": entry["_id"]}
+            )
+
+            assert len(entries) == 1
+            assert entries[0]["action"] == "create"
+            assert entries[0]["actor_id"] == ACTOR["_id"]
+            assert entries[0]["actor_name"] == ACTOR["full_name"]
+            assert entries[0]["changes"] == []
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("collection_name,entity_label", CATALOGS)
+def test_rename_entry_with_different_name_generates_update_entry(
+    use_test_db, collection_name, entity_label
+) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await ensure_indexes(collection_name)
+            entry = await catalog_service.create_entry(
+                collection_name, entity_label, "Ventas", ACTOR
+            )
+
+            await catalog_service.rename_entry(
+                collection_name, entity_label, entry["_id"], "Comercial", ACTOR
+            )
+
+            entries = await list_history_entries(
+                {
+                    "entity_type": _ENTITY_TYPES[collection_name],
+                    "entity_id": entry["_id"],
+                    "action": "update",
+                }
+            )
+
+            assert len(entries) == 1
+            assert entries[0]["changes"] == [
+                {"field": "name", "old_value": "Ventas", "new_value": "Comercial"}
+            ]
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("collection_name,entity_label", CATALOGS)
+def test_rename_entry_with_same_name_does_not_generate_history_entry(
+    use_test_db, collection_name, entity_label
+) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await ensure_indexes(collection_name)
+            entry = await catalog_service.create_entry(
+                collection_name, entity_label, "Ventas", ACTOR
+            )
+
+            await catalog_service.rename_entry(
+                collection_name, entity_label, entry["_id"], "Ventas", ACTOR
+            )
+
+            entries = await list_history_entries(
+                {
+                    "entity_type": _ENTITY_TYPES[collection_name],
+                    "entity_id": entry["_id"],
+                    "action": "update",
+                }
+            )
+
+            assert entries == []
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("collection_name,entity_label", CATALOGS)
+def test_set_enabled_disable_generates_disable_history_entry(
+    use_test_db, collection_name, entity_label
+) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await ensure_indexes(collection_name)
+            entry = await catalog_service.create_entry(
+                collection_name, entity_label, "Ventas", ACTOR
+            )
+            await catalog_service.create_entry(collection_name, entity_label, "Soporte", ACTOR)
+
+            await catalog_service.set_enabled(
+                collection_name, entity_label, entry["_id"], False, ACTOR, _count_assigned_stub
+            )
+
+            entries = await list_history_entries(
+                {
+                    "entity_type": _ENTITY_TYPES[collection_name],
+                    "entity_id": entry["_id"],
+                    "action": "disable",
+                }
+            )
+
+            assert len(entries) == 1
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("collection_name,entity_label", CATALOGS)
+def test_set_enabled_enable_again_generates_enable_history_entry(
+    use_test_db, collection_name, entity_label
+) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await ensure_indexes(collection_name)
+            entry = await catalog_service.create_entry(
+                collection_name, entity_label, "Ventas", ACTOR
+            )
+            await catalog_service.create_entry(collection_name, entity_label, "Soporte", ACTOR)
+            await catalog_service.set_enabled(
+                collection_name, entity_label, entry["_id"], False, ACTOR, _count_assigned_stub
+            )
+
+            await catalog_service.set_enabled(
+                collection_name, entity_label, entry["_id"], True, ACTOR, _count_assigned_stub
+            )
+
+            entries = await list_history_entries(
+                {
+                    "entity_type": _ENTITY_TYPES[collection_name],
+                    "entity_id": entry["_id"],
+                    "action": "enable",
+                }
+            )
+
+            assert len(entries) == 1
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("collection_name,entity_label", CATALOGS)
+def test_set_enabled_already_disabled_does_not_generate_extra_history_entry(
+    use_test_db, collection_name, entity_label
+) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await ensure_indexes(collection_name)
+            entry = await catalog_service.create_entry(
+                collection_name, entity_label, "Ventas", ACTOR
+            )
+            await catalog_service.create_entry(collection_name, entity_label, "Soporte", ACTOR)
+            await catalog_service.set_enabled(
+                collection_name, entity_label, entry["_id"], False, ACTOR, _count_assigned_stub
+            )
+
+            await catalog_service.set_enabled(
+                collection_name, entity_label, entry["_id"], False, ACTOR, _count_assigned_stub
+            )
+
+            entries = await list_history_entries(
+                {
+                    "entity_type": _ENTITY_TYPES[collection_name],
+                    "entity_id": entry["_id"],
+                    "action": "disable",
+                }
+            )
+
+            assert len(entries) == 1
 
     asyncio.run(scenario())

@@ -104,3 +104,34 @@ def test_find_user_by_id_returns_none_when_not_found(use_test_db) -> None:
             assert await find_user_by_id(ObjectId()) is None
 
     asyncio.run(scenario())
+
+
+def test_insert_user_behaves_the_same_with_explicit_session_none(use_test_db) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            without_arg = await insert_user(_make_user("sin-sesion@hispacontact.com"))
+            with_none = await insert_user(
+                _make_user("con-sesion-nula@hispacontact.com"), session=None
+            )
+
+            assert without_arg is not None
+            assert with_none is not None
+            assert without_arg != with_none
+
+    asyncio.run(scenario())
+
+
+def test_update_user_behaves_the_same_with_explicit_session_none(use_test_db) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await insert_user(_make_user("update-sesion-nula@hispacontact.com"))
+
+            modified = await update_user(
+                "update-sesion-nula@hispacontact.com", {"is_active": False}, session=None
+            )
+            found = await find_user_by_email("update-sesion-nula@hispacontact.com")
+
+            assert modified is True
+            assert found["is_active"] is False
+
+    asyncio.run(scenario())

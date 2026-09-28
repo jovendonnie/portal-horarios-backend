@@ -6,12 +6,13 @@ from bson import ObjectId
 
 from conftest import mongo_test_session
 from src.models import catalog as catalog_model
-from src.models.employee import ensure_indexes
+from src.models.employee import ensure_indexes, find_employee_by_identity
 from src.models.employee import find_employee_by_id as find_employee_document
+from src.models.history import list_entries
 from src.schemas.employee import EmployeeCreate, EmployeeUpdate
-from src.services import employee_service
+from src.services import employee_service, history_service
 
-ACTOR = {"_id": "admin-id"}
+ACTOR = {"_id": "admin-id", "full_name": "Admin Actor"}
 
 
 async def _seed_catalog_entry(collection_name: str, name: str) -> str:
@@ -580,5 +581,165 @@ def test_disabling_area_of_assigned_employee_does_not_change_document(use_test_d
             assert document_after == document_before
             refreshed = await employee_service.get_employee(ObjectId(created.id))
             assert refreshed.area_name == "Ventas"  # sigue resolviendo aunque esté deshabilitada
+
+    asyncio.run(scenario())
+
+
+# --- Auditoría del historial en create_employee / update_employee / update_employee_status (T021-T024) ---
+
+
+def test_create_employee_generates_create_and_status_change_entries(use_test_db) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await ensure_indexes()
+
+            created = await employee_service.create_employee(
+                ACTOR, await _make_create(status_name="Presencial")
+            )
+
+            entries = await list_entries(
+                {"entity_type": "employee", "entity_id": ObjectId(created.id)}
+            )
+
+            assert len(entries) == 2
+            actions = {entry["action"] for entry in entries}
+            assert actions == {"create", "status_change"}
+
+            create_entry = next(entry for entry in entries if entry["action"] == "create")
+            changes_by_field = {change["field"]: change for change in create_entry["changes"]}
+            assert changes_by_field["full_name"] == {
+                "field": "full_name",
+                "old_value": None,
+                "new_value": "Carla Gómez",
+            }
+            assert changes_by_field["position"] == {
+                "field": "position",
+                "old_value": None,
+                "new_value": "lider",
+            }
+            assert changes_by_field["area"] == {
+                "field": "area",
+                "old_value": None,
+                "new_value": "Ventas",
+            }
+            assert create_entry["actor_id"] == ACTOR["_id"]
+            assert create_entry["actor_name"] == ACTOR["full_name"]
+
+            status_entry = next(entry for entry in entries if entry["action"] == "status_change")
+            assert status_entry["changes"] == [
+                {"field": "status", "old_value": None, "new_value": "Presencial"}
+            ]
+
+    asyncio.run(scenario())
+
+
+def test_update_employee_multiple_fields_generates_single_history_entry(use_test_db) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await ensure_indexes()
+            created = await employee_service.create_employee(ACTOR, await _make_create())
+            new_area_id = await _seed_catalog_entry("areas", "Marketing")
+
+            await employee_service.update_employee(
+                ACTOR,
+                ObjectId(created.id),
+                EmployeeUpdate(full_name="Carla Gómez Editada", area_id=new_area_id),
+            )
+
+            entries = await list_entries(
+                {
+                    "entity_type": "employee",
+                    "entity_id": ObjectId(created.id),
+                    "action": "update",
+                }
+            )
+
+            assert len(entries) == 1
+            changes_by_field = {change["field"]: change for change in entries[0]["changes"]}
+            assert changes_by_field["full_name"]["old_value"] == "Carla Gómez"
+            assert changes_by_field["full_name"]["new_value"] == "Carla Gómez Editada"
+            assert changes_by_field["area"]["old_value"] == "Ventas"
+            assert changes_by_field["area"]["new_value"] == "Marketing"
+            assert "position" not in changes_by_field
+
+    asyncio.run(scenario())
+
+
+def test_update_employee_no_op_does_not_generate_history_entry_or_touch_audit_fields(
+    use_test_db,
+) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await ensure_indexes()
+            created = await employee_service.create_employee(ACTOR, await _make_create())
+
+            updated = await employee_service.update_employee(
+                ACTOR, ObjectId(created.id), EmployeeUpdate(full_name="Carla Gómez")
+            )
+
+            entries = await list_entries(
+                {
+                    "entity_type": "employee",
+                    "entity_id": ObjectId(created.id),
+                    "action": "update",
+                }
+            )
+
+            assert entries == []
+            assert updated.updated_at is None
+            assert updated.updated_by is None
+
+    asyncio.run(scenario())
+
+
+def test_update_employee_status_generates_entry_with_old_and_new_status_names(
+    use_test_db,
+) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await ensure_indexes()
+            created = await employee_service.create_employee(
+                ACTOR, await _make_create(status_name="Presencial")
+            )
+            new_status_id = await _seed_catalog_entry("estados", "Vacaciones")
+
+            await employee_service.update_employee_status(
+                ObjectId(created.id), new_status_id, ACTOR, datetime.now(timezone.utc)
+            )
+
+            entries = await list_entries(
+                {
+                    "entity_type": "employee",
+                    "entity_id": ObjectId(created.id),
+                    "action": "status_change",
+                }
+            )
+
+            assert len(entries) == 2
+            latest = entries[0]
+            change = latest["changes"][0]
+            assert change["field"] == "status"
+            assert change["old_value"] == "Presencial"
+            assert change["new_value"] == "Vacaciones"
+
+    asyncio.run(scenario())
+
+
+def test_create_employee_atomicity_reverts_employee_insert_when_history_insert_fails(
+    use_test_db, monkeypatch
+) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await ensure_indexes()
+
+            async def failing_insert_entry(document, session=None):
+                raise RuntimeError("boom")
+
+            monkeypatch.setattr(history_service, "insert_entry", failing_insert_entry)
+
+            with pytest.raises(RuntimeError):
+                await employee_service.create_employee(ACTOR, await _make_create())
+
+            assert await find_employee_by_identity("Carla Gómez", "lider", "Ventas") is None
 
     asyncio.run(scenario())

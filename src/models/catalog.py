@@ -1,6 +1,8 @@
 from datetime import datetime
 from typing import Any
 
+from motor.motor_asyncio import AsyncIOMotorClientSession
+
 from src.core.database import get_database
 
 _NAME_COLLATION = {"locale": "es", "strength": 2}
@@ -16,7 +18,11 @@ async def ensure_indexes(collection_name: str) -> None:
 
 
 async def insert_entry(
-    collection_name: str, name: str, actor_id: Any, ahora: datetime
+    collection_name: str,
+    name: str,
+    actor_id: Any,
+    ahora: datetime,
+    session: AsyncIOMotorClientSession | None = None,
 ) -> Any:
     db = get_database()
     document = {
@@ -27,7 +33,7 @@ async def insert_entry(
         "updated_at": None,
         "updated_by": None,
     }
-    result = await db[collection_name].insert_one(document)
+    result = await db[collection_name].insert_one(document, session=session)
     return result.inserted_id
 
 
@@ -52,12 +58,18 @@ async def list_entries(
 
 
 async def update_entry_name(
-    collection_name: str, entry_id: Any, name: str, actor_id: Any, ahora: datetime
+    collection_name: str,
+    entry_id: Any,
+    name: str,
+    actor_id: Any,
+    ahora: datetime,
+    session: AsyncIOMotorClientSession | None = None,
 ) -> bool:
     db = get_database()
     result = await db[collection_name].update_one(
         {"_id": entry_id},
         {"$set": {"name": name.strip(), "updated_at": ahora, "updated_by": actor_id}},
+        session=session,
     )
     return result.modified_count > 0
 
@@ -68,11 +80,17 @@ async def count_enabled(collection_name: str) -> int:
 
 
 async def set_entry_enabled(
-    collection_name: str, entry_id: Any, enabled: bool, actor_id: Any, ahora: datetime
+    collection_name: str,
+    entry_id: Any,
+    enabled: bool,
+    actor_id: Any,
+    ahora: datetime,
+    session: AsyncIOMotorClientSession | None = None,
 ) -> bool:
     db = get_database()
     result = await db[collection_name].update_one(
         {"_id": entry_id},
         {"$set": {"is_enabled": enabled, "updated_at": ahora, "updated_by": actor_id}},
+        session=session,
     )
     return result.modified_count > 0

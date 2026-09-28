@@ -220,3 +220,68 @@ def test_set_entry_enabled_is_idempotent_when_already_enabled(
             assert found["is_enabled"] is True
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("collection_name", COLLECTIONS)
+def test_insert_entry_behaves_the_same_with_explicit_session_none(
+    use_test_db, collection_name
+) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            actor_id = ObjectId()
+            ahora = _ahora()
+
+            without_arg = await insert_entry(collection_name, "Ventas", actor_id, ahora)
+            with_none = await insert_entry(
+                collection_name, "Soporte", actor_id, ahora, session=None
+            )
+
+            assert without_arg is not None
+            assert with_none is not None
+            assert without_arg != with_none
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("collection_name", COLLECTIONS)
+def test_update_entry_name_behaves_the_same_with_explicit_session_none(
+    use_test_db, collection_name
+) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            actor_id = ObjectId()
+            ahora = _ahora()
+
+            entry_id = await insert_entry(collection_name, "Ventas", actor_id, ahora)
+
+            modified = await update_entry_name(
+                collection_name, entry_id, "Comercial", actor_id, ahora, session=None
+            )
+            found = await find_entry_by_id(collection_name, entry_id)
+
+            assert modified is True
+            assert found["name"] == "Comercial"
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("collection_name", COLLECTIONS)
+def test_set_entry_enabled_behaves_the_same_with_explicit_session_none(
+    use_test_db, collection_name
+) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            actor_id = ObjectId()
+            ahora = _ahora()
+
+            entry_id = await insert_entry(collection_name, "Ventas", actor_id, ahora)
+
+            modified = await set_entry_enabled(
+                collection_name, entry_id, False, actor_id, ahora, session=None
+            )
+            found = await find_entry_by_id(collection_name, entry_id)
+
+            assert modified is True
+            assert found["is_enabled"] is False
+
+    asyncio.run(scenario())

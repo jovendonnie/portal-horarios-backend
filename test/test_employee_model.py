@@ -300,3 +300,52 @@ def test_update_employee_status_fields_returns_false_when_not_found(use_test_db)
             assert modified is False
 
     asyncio.run(scenario())
+
+
+def test_insert_employee_behaves_the_same_with_explicit_session_none(use_test_db) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            without_arg = await insert_employee(_make_employee("Sin Sesion"))
+            with_none = await insert_employee(_make_employee("Con Sesion Nula"), session=None)
+
+            assert without_arg is not None
+            assert with_none is not None
+            assert without_arg != with_none
+
+    asyncio.run(scenario())
+
+
+def test_update_employee_fields_behaves_the_same_with_explicit_session_none(use_test_db) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            inserted_id = await insert_employee(_make_employee("Update Sesion Nula"))
+
+            modified = await update_employee_fields(
+                inserted_id, {"area": "Marketing"}, session=None
+            )
+            found = await find_employee_by_id(inserted_id)
+
+            assert modified is True
+            assert found["area"] == "Marketing"
+
+    asyncio.run(scenario())
+
+
+def test_update_employee_status_fields_behaves_the_same_with_explicit_session_none(
+    use_test_db,
+) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            inserted_id = await insert_employee(_make_employee("Status Sesion Nula"))
+            nuevo_estado = ObjectId()
+            actor_id = ObjectId()
+
+            modified = await update_employee_status_fields(
+                inserted_id, nuevo_estado, actor_id, _ahora(), session=None
+            )
+            found = await find_employee_by_id(inserted_id)
+
+            assert modified is True
+            assert found["estado_id"] == nuevo_estado
+
+    asyncio.run(scenario())

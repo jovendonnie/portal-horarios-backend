@@ -19,6 +19,7 @@ from bson import ObjectId
 from bson.errors import InvalidId
 from pymongo.errors import DuplicateKeyError
 
+from src.core.database import start_transaction
 from src.models import catalog
 from src.models.employee import (
     find_employee_by_id,
@@ -29,6 +30,7 @@ from src.models.employee import (
     update_employee_status_fields,
 )
 from src.schemas.employee import EmployeeCreate, EmployeeOut, EmployeeUpdate
+from src.services import history_service
 
 CARGOS_VALIDOS = {"recursos_humanos", "lider"}
 
@@ -175,10 +177,34 @@ async def create_employee(actor: dict[str, Any], data: EmployeeCreate) -> Employ
         "creado_por": actor.get("_id"),
     }
 
-    try:
-        inserted_id = await insert_employee(document)
-    except DuplicateKeyError as exc:
-        raise DuplicateEmployeeError() from exc
+    initial_changes = [
+        {"field": "full_name", "old_value": None, "new_value": full_name},
+        {"field": "position", "old_value": None, "new_value": position},
+        {"field": "area", "old_value": None, "new_value": area_name},
+    ]
+
+    async with start_transaction() as session:
+        try:
+            inserted_id = await insert_employee(document, session=session)
+            await history_service.record_change(
+                session, "employee", inserted_id, "create", initial_changes, actor, ahora
+            )
+            await history_service.record_change(
+                session,
+                "employee",
+                inserted_id,
+                "status_change",
+                [{"field": "status", "old_value": None, "new_value": status_entry["name"]}],
+                actor,
+                ahora,
+            )
+            await session.commit_transaction()
+        except DuplicateKeyError as exc:
+            await session.abort_transaction()
+            raise DuplicateEmployeeError() from exc
+        except Exception:
+            await session.abort_transaction()
+            raise
 
     created = await find_employee_by_id(inserted_id)
     assert created is not None
@@ -227,20 +253,42 @@ async def update_employee(
     if identity_changed and await find_employee_by_identity(new_full_name, new_position, new_area_name) is not None:
         raise DuplicateEmployeeError()
 
+    diffs = history_service.compute_diff(
+        {
+            "full_name": current["nombre_completo"],
+            "position": current["cargo"],
+            "area": current["area"],
+        },
+        {"full_name": new_full_name, "position": new_position, "area": new_area_name},
+        ["full_name", "position", "area"],
+    )
+    if not diffs:
+        return await _to_employee_out(current)
+
+    ahora = _utcnow()
     updates: dict[str, Any] = {
         "nombre_completo": new_full_name,
         "cargo": new_position,
         "area": new_area_name,
-        "actualizado_en": _utcnow(),
+        "actualizado_en": ahora,
         "actualizado_por": actor.get("_id"),
     }
     if area_entry is not None:
         updates["area_id"] = area_entry["_id"]
 
-    try:
-        await update_employee_fields(employee_id, updates)
-    except DuplicateKeyError as exc:
-        raise DuplicateEmployeeError() from exc
+    async with start_transaction() as session:
+        try:
+            await update_employee_fields(employee_id, updates, session=session)
+            await history_service.record_change(
+                session, "employee", employee_id, "update", diffs, actor, ahora
+            )
+            await session.commit_transaction()
+        except DuplicateKeyError as exc:
+            await session.abort_transaction()
+            raise DuplicateEmployeeError() from exc
+        except Exception:
+            await session.abort_transaction()
+            raise
 
     updated = await find_employee_by_id(employee_id)
     assert updated is not None
@@ -256,7 +304,24 @@ async def update_employee_status(
 
     status_entry = await _validate_catalog_reference("estados", status_id)
 
-    await update_employee_status_fields(employee_id, status_entry["_id"], actor.get("_id"), ahora)
+    old_status_entry = await catalog.find_entry_by_id("estados", current.get("estado_id"))
+    old_status_name = old_status_entry["name"] if old_status_entry is not None else None
+    changes = [
+        {"field": "status", "old_value": old_status_name, "new_value": status_entry["name"]}
+    ]
+
+    async with start_transaction() as session:
+        try:
+            await update_employee_status_fields(
+                employee_id, status_entry["_id"], actor.get("_id"), ahora, session=session
+            )
+            await history_service.record_change(
+                session, "employee", employee_id, "status_change", changes, actor, ahora
+            )
+            await session.commit_transaction()
+        except Exception:
+            await session.abort_transaction()
+            raise
 
     updated = await find_employee_by_id(employee_id)
     assert updated is not None

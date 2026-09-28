@@ -2,7 +2,11 @@ from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from typing import Any
 
+from src.core.database import start_transaction
 from src.models import catalog
+from src.services import history_service
+
+_ENTITY_TYPES: dict[str, str] = {"areas": "area", "estados": "status"}
 
 
 class InvalidNameError(Exception):
@@ -46,7 +50,20 @@ async def create_entry(
         raise DuplicateEntryError(entity_label)
 
     ahora = datetime.now(timezone.utc)
-    entry_id = await catalog.insert_entry(collection_name, trimmed, actor.get("_id"), ahora)
+
+    async with start_transaction() as session:
+        try:
+            entry_id = await catalog.insert_entry(
+                collection_name, trimmed, actor.get("_id"), ahora, session=session
+            )
+            await history_service.record_change(
+                session, _ENTITY_TYPES[collection_name], entry_id, "create", [], actor, ahora
+            )
+            await session.commit_transaction()
+        except Exception:
+            await session.abort_transaction()
+            raise
+
     return await catalog.find_entry_by_id(collection_name, entry_id)
 
 
@@ -69,8 +86,25 @@ async def rename_entry(
     if duplicate is not None and duplicate["_id"] != entry_id:
         raise DuplicateEntryError(entity_label)
 
+    diffs = history_service.compute_diff({"name": actual["name"]}, {"name": trimmed}, ["name"])
+    if not diffs:
+        return actual
+
     ahora = datetime.now(timezone.utc)
-    await catalog.update_entry_name(collection_name, entry_id, trimmed, actor.get("_id"), ahora)
+
+    async with start_transaction() as session:
+        try:
+            await catalog.update_entry_name(
+                collection_name, entry_id, trimmed, actor.get("_id"), ahora, session=session
+            )
+            await history_service.record_change(
+                session, _ENTITY_TYPES[collection_name], entry_id, "update", diffs, actor, ahora
+            )
+            await session.commit_transaction()
+        except Exception:
+            await session.abort_transaction()
+            raise
+
     return await catalog.find_entry_by_id(collection_name, entry_id)
 
 
@@ -94,6 +128,20 @@ async def set_enabled(
 
     affected = await count_assigned_fn(entry_id) if not enabled else None
     ahora = datetime.now(timezone.utc)
-    await catalog.set_entry_enabled(collection_name, entry_id, enabled, actor.get("_id"), ahora)
+    action = "disable" if not enabled else "enable"
+
+    async with start_transaction() as session:
+        try:
+            await catalog.set_entry_enabled(
+                collection_name, entry_id, enabled, actor.get("_id"), ahora, session=session
+            )
+            await history_service.record_change(
+                session, _ENTITY_TYPES[collection_name], entry_id, action, [], actor, ahora
+            )
+            await session.commit_transaction()
+        except Exception:
+            await session.abort_transaction()
+            raise
+
     updated = await catalog.find_entry_by_id(collection_name, entry_id)
     return updated, affected

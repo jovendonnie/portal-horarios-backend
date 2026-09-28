@@ -1,6 +1,8 @@
 from datetime import datetime, timezone
 from typing import Any
 
+from motor.motor_asyncio import AsyncIOMotorClientSession
+
 from src.core.database import get_database
 
 COLLECTION_NAME = "Usuarios"
@@ -24,7 +26,9 @@ def _trim_identity_fields(fields: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-async def insert_employee(document: dict[str, Any]) -> Any:
+async def insert_employee(
+    document: dict[str, Any], session: AsyncIOMotorClientSession | None = None
+) -> Any:
     db = get_database()
     to_insert = _trim_identity_fields(
         {
@@ -33,7 +37,7 @@ async def insert_employee(document: dict[str, Any]) -> Any:
             **document,
         }
     )
-    result = await db[COLLECTION_NAME].insert_one(to_insert)
+    result = await db[COLLECTION_NAME].insert_one(to_insert, session=session)
     return result.inserted_id
 
 
@@ -57,10 +61,14 @@ async def list_employees() -> list[dict[str, Any]]:
     return await db[COLLECTION_NAME].find({}).to_list(length=None)
 
 
-async def update_employee_fields(employee_id: Any, updates: dict[str, Any]) -> bool:
+async def update_employee_fields(
+    employee_id: Any,
+    updates: dict[str, Any],
+    session: AsyncIOMotorClientSession | None = None,
+) -> bool:
     db = get_database()
     result = await db[COLLECTION_NAME].update_one(
-        {"_id": employee_id}, {"$set": _trim_identity_fields(updates)}
+        {"_id": employee_id}, {"$set": _trim_identity_fields(updates)}, session=session
     )
     return result.modified_count > 0
 
@@ -76,7 +84,11 @@ async def count_employees_by_status(estado_id: Any) -> int:
 
 
 async def update_employee_status_fields(
-    employee_id: Any, estado_id: Any, actor_id: Any, ahora: datetime
+    employee_id: Any,
+    estado_id: Any,
+    actor_id: Any,
+    ahora: datetime,
+    session: AsyncIOMotorClientSession | None = None,
 ) -> bool:
     db = get_database()
     result = await db[COLLECTION_NAME].update_one(
@@ -88,5 +100,6 @@ async def update_employee_status_fields(
                 "estado_actualizado_por": actor_id,
             }
         },
+        session=session,
     )
     return result.modified_count > 0

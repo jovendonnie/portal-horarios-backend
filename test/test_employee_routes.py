@@ -13,7 +13,7 @@ from src.models import catalog as catalog_model
 from src.models.employee import ensure_indexes
 from src.schemas.employee import EmployeeCreate, EmployeeStatusUpdate, EmployeeUpdate
 
-ACTOR = {"_id": "admin-id", "role": "admin"}
+ACTOR = {"_id": "admin-id", "role": "admin", "full_name": "Admin Actor"}
 
 
 async def _seed_catalog_entry(collection_name: str, name: str) -> str:

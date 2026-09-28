@@ -12,7 +12,7 @@ from src.models.catalog import ensure_indexes
 from src.schemas.area import AreaCreate, AreaUpdate
 from src.schemas.estado import EstadoCreate, EstadoUpdate
 
-ACTOR = {"_id": ObjectId(), "role": "admin"}
+ACTOR = {"_id": ObjectId(), "role": "admin", "full_name": "Admin Actor"}
 
 CATALOGS = [
     (areas, "areas", AreaCreate, AreaUpdate, "area"),

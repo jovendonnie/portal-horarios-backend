@@ -226,7 +226,7 @@ async def _create_employee(name: str, position: str, area: str, status: str) -> 
     data = EmployeeCreate.model_construct(
         full_name=name, position=position, area_id=area_id, status_id=status_id
     )
-    employee = await create_employee({"_id": None}, data)
+    employee = await create_employee({"_id": None, "full_name": "CLI"}, data)
     return {"employee": _employee_payload(employee)}
 
 
@@ -252,7 +252,7 @@ async def _update_employee(
         changes_kwargs["area_id"] = await _resolve_catalog_id("areas", area, InvalidAreaError)
     changes = EmployeeUpdate.model_construct(**changes_kwargs)
 
-    employee = await update_employee({"_id": None}, object_id, changes)
+    employee = await update_employee({"_id": None, "full_name": "CLI"}, object_id, changes)
     return {"employee": _employee_payload(employee)}
 
 
@@ -263,7 +263,9 @@ async def _set_employee_status(employee_id: str, status: str) -> dict[str, Any]:
         raise EmployeeNotFoundError() from exc
 
     status_id = await _resolve_catalog_id("estados", status, InvalidStatusError)
-    employee = await update_employee_status(object_id, status_id, {"_id": None}, _utcnow())
+    employee = await update_employee_status(
+        object_id, status_id, {"_id": None, "full_name": "CLI"}, _utcnow()
+    )
     return {"employee": _employee_status_payload(employee)}
 
 
@@ -284,7 +286,9 @@ def _parse_catalog_id(entry_id: str, entity_label: str) -> ObjectId:
 
 
 async def _create_catalog_entry(collection_name: str, entity_label: str, name: str) -> dict[str, Any]:
-    entry = await catalog_service.create_entry(collection_name, entity_label, name, {"_id": None})
+    entry = await catalog_service.create_entry(
+        collection_name, entity_label, name, {"_id": None, "full_name": "CLI"}
+    )
     return {"entry": _entry_payload(entry)}
 
 
@@ -297,7 +301,11 @@ async def _update_catalog_entry(
     collection_name: str, entity_label: str, entry_id: str, name: str
 ) -> dict[str, Any]:
     entry = await catalog_service.rename_entry(
-        collection_name, entity_label, _parse_catalog_id(entry_id, entity_label), name, {"_id": None}
+        collection_name,
+        entity_label,
+        _parse_catalog_id(entry_id, entity_label),
+        name,
+        {"_id": None, "full_name": "CLI"},
     )
     return {"entry": _entry_payload(entry)}
 
@@ -310,7 +318,7 @@ async def _set_catalog_enabled(
         entity_label,
         _parse_catalog_id(entry_id, entity_label),
         enabled,
-        {"_id": None},
+        {"_id": None, "full_name": "CLI"},
         _count_assigned_stub,
     )
     payload: dict[str, Any] = {"entry": _entry_payload(entry)}
