@@ -17,12 +17,12 @@ from bson.errors import InvalidId
 
 from src.core.database import close_mongo_connection, connect_to_mongo
 from src.models.catalog import find_entry_by_name
-from src.models.session import delete_sessions_by_user
 from src.models.user import find_user_by_email, update_user
 from src.schemas.employee import EmployeeCreate, EmployeeOut, EmployeeUpdate
+from src.schemas.history import HistoryQuery
 from src.schemas.user import UserCreate
 from src.services.auth_service import EmailAlreadyExistsError, register_user
-from src.services import catalog_service
+from src.services import catalog_service, history_service, user_service
 from src.services.employee_service import (
     DuplicateEmployeeError,
     EmployeeNotFoundError,
@@ -148,13 +148,26 @@ def _build_parser() -> _ArgumentParser:
     disable_status_parser = subparsers.add_parser("disable-status", help="Deshabilita un Estado")
     disable_status_parser.add_argument("--id", required=True)
 
+    list_history_parser = subparsers.add_parser(
+        "list-history", help="Consulta el historial de auditoría"
+    )
+    list_history_parser.add_argument(
+        "--entity-type",
+        dest="entity_type",
+        choices=["employee", "area", "status", "user", "login"],
+    )
+    list_history_parser.add_argument("--entity-id", dest="entity_id")
+    list_history_parser.add_argument("--actor-id", dest="actor_id")
+    list_history_parser.add_argument("--from", dest="date_from")
+    list_history_parser.add_argument("--to", dest="date_to")
+
     return parser
 
 
 async def _create_admin(name: str, email: str) -> dict[str, Any]:
     _validate_email(email)
     data = UserCreate.model_construct(full_name=name, email=email, role="admin")
-    result = await register_user({"_id": None}, data)
+    result = await register_user({"_id": None, "full_name": "CLI"}, data)
     return {
         "user": {
             "id": str(result.user["_id"]),
@@ -177,13 +190,7 @@ async def _unlock_user(email: str) -> dict[str, Any]:
 
 async def _deactivate_user(email: str) -> dict[str, Any]:
     _validate_email(email)
-    user = await find_user_by_email(email)
-    if user is None:
-        raise _UserNotFoundError(email)
-
-    await update_user(email, {"is_active": False})
-    sessions_invalidated = await delete_sessions_by_user(user["_id"])
-    return {"email": email, "is_active": False, "sessions_invalidated": sessions_invalidated}
+    return await user_service.deactivate_user({"_id": None, "full_name": "CLI"}, email)
 
 
 def _employee_payload(employee: EmployeeOut) -> dict[str, Any]:
@@ -327,6 +334,46 @@ async def _set_catalog_enabled(
     return payload
 
 
+def _parse_history_date(value: str | None, flag: str) -> datetime | None:
+    if value is None:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise _InvalidArgumentsError(f"Fecha con formato inválido en {flag}: {value}") from exc
+
+
+def _history_entry_payload(entry: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": str(entry["_id"]),
+        "entity_type": entry["entity_type"],
+        "entity_id": str(entry["entity_id"]) if entry["entity_id"] is not None else None,
+        "action": entry["action"],
+        "actor_id": str(entry["actor_id"]) if entry["actor_id"] is not None else None,
+        "actor_name": entry["actor_name"],
+        "changes": entry["changes"],
+        "occurred_at": entry["occurred_at"].isoformat(),
+    }
+
+
+async def _list_history(
+    entity_type: str | None,
+    entity_id: str | None,
+    actor_id: str | None,
+    date_from: str | None,
+    date_to: str | None,
+) -> dict[str, Any]:
+    filters = HistoryQuery(
+        entity_type=entity_type,
+        entity_id=entity_id,
+        actor_id=actor_id,
+        date_from=_parse_history_date(date_from, "--from"),
+        date_to=_parse_history_date(date_to, "--to"),
+    )
+    entries = await history_service.query_history(filters)
+    return {"entries": [_history_entry_payload(entry) for entry in entries]}
+
+
 def _enabled_filter(args: argparse.Namespace) -> bool | None:
     if getattr(args, "enabled_flag", False):
         return True
@@ -368,7 +415,11 @@ async def _dispatch(args: argparse.Namespace) -> dict[str, Any]:
         return await _update_catalog_entry("estados", "Estado", args.id, args.name)
     if args.command == "enable-status":
         return await _set_catalog_enabled("estados", "Estado", args.id, True)
-    return await _set_catalog_enabled("estados", "Estado", args.id, False)
+    if args.command == "disable-status":
+        return await _set_catalog_enabled("estados", "Estado", args.id, False)
+    return await _list_history(
+        args.entity_type, args.entity_id, args.actor_id, args.date_from, args.date_to
+    )
 
 
 async def _execute(args: argparse.Namespace) -> int:
@@ -380,7 +431,7 @@ async def _execute(args: argparse.Namespace) -> int:
     except EmailAlreadyExistsError:
         _print_error("email_taken", "Ya existe una cuenta con ese correo")
         return EXIT_CONFLICT
-    except _UserNotFoundError:
+    except (_UserNotFoundError, user_service.UserNotFoundError):
         _print_error("user_not_found", "No existe una cuenta con ese correo")
         return EXIT_NOT_FOUND
     except InvalidPositionError as exc:
@@ -410,6 +461,12 @@ async def _execute(args: argparse.Namespace) -> int:
     except catalog_service.LastEnabledEntryError as exc:
         _print_error(f"last_enabled_{_ENTITY_CODE[exc.entity_label]}", str(exc))
         return EXIT_CONFLICT
+    except history_service.EntityNotFoundError:
+        _print_error("entity_not_found", "No existe una entidad de ese tipo con ese id")
+        return EXIT_NOT_FOUND
+    except history_service.EntityTypeRequiredError:
+        _print_error("invalid_arguments", "entity-id requiere especificar entity-type")
+        return EXIT_INVALID_ARGS
     except Exception as exc:  # infraestructura/imprevisto
         _print_error("unexpected_error", str(exc))
         return EXIT_UNEXPECTED

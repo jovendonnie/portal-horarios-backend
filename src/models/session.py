@@ -1,6 +1,8 @@
 from datetime import datetime, timezone
 from typing import Any
 
+from motor.motor_asyncio import AsyncIOMotorClientSession
+
 from src.core.database import get_database
 
 COLLECTION_NAME = "sessions"
@@ -37,7 +39,9 @@ async def delete_session(session_token: str) -> bool:
     return result.deleted_count > 0
 
 
-async def delete_sessions_by_user(user_id: Any) -> int:
+async def delete_sessions_by_user(
+    user_id: Any, session: AsyncIOMotorClientSession | None = None
+) -> int:
     db = get_database()
-    result = await db[COLLECTION_NAME].delete_many({"user_id": user_id})
+    result = await db[COLLECTION_NAME].delete_many({"user_id": user_id}, session=session)
     return result.deleted_count

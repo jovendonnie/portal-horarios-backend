@@ -9,9 +9,10 @@ from conftest import mongo_test_session
 from src.core.config import settings
 from src.core.database import get_database
 from src.core.security import hash_password, verify_password
+from src.models.history import list_entries
 from src.models.user import ensure_indexes, find_user_by_email, insert_user
 from src.schemas.user import UserCreate
-from src.services import auth_service
+from src.services import auth_service, history_service
 
 
 def _make_user(email: str, password: str) -> dict[str, Any]:
@@ -122,7 +123,12 @@ def test_register_user_creates_account_with_temporary_password(use_test_db) -> N
     async def scenario() -> None:
         async with mongo_test_session():
             await ensure_indexes()
-            actor = {"_id": "admin-id", "email": "admin@hispacontact.com", "role": "admin"}
+            actor = {
+                "_id": "admin-id",
+                "full_name": "Admin Uno",
+                "email": "admin@hispacontact.com",
+                "role": "admin",
+            }
             data = UserCreate(full_name="Ana Pérez", email="ana@hispacontact.com", role="lider")
 
             result = await auth_service.register_user(actor, data)
@@ -139,7 +145,7 @@ def test_register_user_rejects_duplicate_email(use_test_db) -> None:
     async def scenario() -> None:
         async with mongo_test_session():
             await ensure_indexes()
-            actor = {"_id": "admin-id"}
+            actor = {"_id": "admin-id", "full_name": "Admin Uno"}
             data = UserCreate(full_name="Ana Pérez", email="dup@hispacontact.com", role="lider")
 
             await auth_service.register_user(actor, data)
@@ -150,5 +156,145 @@ def test_register_user_rejects_duplicate_email(use_test_db) -> None:
             db = get_database()
             count = await db["users"].count_documents({"email": "dup@hispacontact.com"})
             assert count == 1
+
+    asyncio.run(scenario())
+
+
+def test_register_user_creates_history_entry_with_initial_data(use_test_db) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await ensure_indexes()
+            actor = {"_id": "admin-id", "full_name": "Admin Uno"}
+            data = UserCreate(full_name="Ana Pérez", email="ana@hispacontact.com", role="lider")
+
+            result = await auth_service.register_user(actor, data)
+
+            entries = await list_entries({"entity_type": "user", "entity_id": result.user["_id"]})
+            assert len(entries) == 1
+            entry = entries[0]
+            assert entry["action"] == "create"
+            assert entry["actor_id"] == "admin-id"
+            assert entry["actor_name"] == "Admin Uno"
+            changed_fields = {change["field"]: change["new_value"] for change in entry["changes"]}
+            assert changed_fields == {
+                "full_name": "Ana Pérez",
+                "email": "ana@hispacontact.com",
+                "role": "lider",
+            }
+
+    asyncio.run(scenario())
+
+
+def test_register_user_atomicity_reverts_insert_when_history_insert_fails(
+    use_test_db, monkeypatch
+) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await ensure_indexes()
+            actor = {"_id": "admin-id", "full_name": "Admin Uno"}
+            data = UserCreate(full_name="Ana Pérez", email="ana@hispacontact.com", role="lider")
+
+            async def failing_insert_entry(document, session=None):
+                raise RuntimeError("boom")
+
+            monkeypatch.setattr(history_service, "insert_entry", failing_insert_entry)
+
+            with pytest.raises(RuntimeError):
+                await auth_service.register_user(actor, data)
+
+            assert await find_user_by_email("ana@hispacontact.com") is None
+
+    asyncio.run(scenario())
+
+
+def test_authenticate_success_records_login_success_with_actor_id(use_test_db) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            user_id = await insert_user(_make_user("ana@hispacontact.com", "Secreta123"))
+
+            await auth_service.authenticate("ana@hispacontact.com", "Secreta123")
+
+            entries = await list_entries({"entity_type": "login"})
+            assert len(entries) == 1
+            entry = entries[0]
+            assert entry["action"] == "login_success"
+            assert entry["actor_id"] == user_id
+            assert entry["actor_name"] == "Ana Pérez"
+
+    asyncio.run(scenario())
+
+
+def test_authenticate_wrong_password_against_real_account_records_login_failed_with_actor_id(
+    use_test_db,
+) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            user_id = await insert_user(_make_user("ana@hispacontact.com", "Secreta123"))
+
+            with pytest.raises(auth_service.InvalidCredentialsError):
+                await auth_service.authenticate("ana@hispacontact.com", "mala")
+
+            entries = await list_entries({"entity_type": "login"})
+            assert len(entries) == 1
+            entry = entries[0]
+            assert entry["action"] == "login_failed"
+            assert entry["actor_id"] == user_id
+            assert entry["actor_name"] == "Ana Pérez"
+
+    asyncio.run(scenario())
+
+
+def test_authenticate_unknown_email_records_login_failed_with_null_actor(use_test_db) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            with pytest.raises(auth_service.InvalidCredentialsError):
+                await auth_service.authenticate("no-existe@hispacontact.com", "lo-que-sea")
+
+            entries = await list_entries({"entity_type": "login"})
+            assert len(entries) == 1
+            entry = entries[0]
+            assert entry["action"] == "login_failed"
+            assert entry["actor_id"] is None
+            assert entry["actor_name"] == "no-existe@hispacontact.com"
+
+    asyncio.run(scenario())
+
+
+def test_authenticate_locked_account_records_login_failed(use_test_db) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            user_id = await insert_user(_make_user("ana@hispacontact.com", "Secreta123"))
+
+            for _ in range(settings.max_failed_attempts):
+                with pytest.raises(auth_service.InvalidCredentialsError):
+                    await auth_service.authenticate("ana@hispacontact.com", "mala")
+
+            with pytest.raises(auth_service.AccountLockedError):
+                await auth_service.authenticate("ana@hispacontact.com", "Secreta123")
+
+            entries = await list_entries({"entity_type": "login", "actor_id": user_id})
+            assert len(entries) == settings.max_failed_attempts + 1
+            assert all(entry["action"] == "login_failed" for entry in entries)
+
+    asyncio.run(scenario())
+
+
+def test_authenticate_atomicity_reverts_failed_attempts_counter_when_history_insert_fails(
+    use_test_db, monkeypatch
+) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await insert_user(_make_user("ana@hispacontact.com", "Secreta123"))
+
+            async def failing_insert_entry(document, session=None):
+                raise RuntimeError("boom")
+
+            monkeypatch.setattr(history_service, "insert_entry", failing_insert_entry)
+
+            with pytest.raises(RuntimeError):
+                await auth_service.authenticate("ana@hispacontact.com", "mala")
+
+            user = await find_user_by_email("ana@hispacontact.com")
+            assert user["failed_login_attempts"] == 0
 
     asyncio.run(scenario())

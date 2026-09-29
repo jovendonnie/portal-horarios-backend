@@ -11,6 +11,7 @@ from src.core.security import hash_password, verify_password
 from src.models import catalog as catalog_model
 from src.models.catalog import ensure_indexes as ensure_catalog_indexes
 from src.models.employee import ensure_indexes as ensure_employee_indexes
+from src.models.history import list_entries
 from src.models.session import find_session_by_token, insert_session
 from src.models.user import ensure_indexes, find_user_by_email, insert_user
 from src import cli
@@ -82,6 +83,7 @@ def test_help_lists_all_subcommands() -> None:
     assert "list-employees" in help_text
     assert "update-employee" in help_text
     assert "set-employee-status" in help_text
+    assert "list-history" in help_text
     for commands in CATALOG_COMMANDS:
         assert commands["create"] in help_text
         assert commands["list"] in help_text
@@ -982,5 +984,111 @@ def test_enable_catalog_entry_not_found_returns_not_found_exit_code(
             payload = json.loads(capsys.readouterr().err)
             assert payload["status"] == "error"
             assert payload["code"] == commands["not_found"]
+
+    asyncio.run(scenario())
+
+
+def test_deactivate_user_creates_history_entry(use_test_db, capsys) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await insert_user(_make_user("activa@hispacontact.com"))
+
+            exit_code = await cli.run(["deactivate-user", "--email", "activa@hispacontact.com"])
+
+            assert exit_code == 0
+            capsys.readouterr()
+
+            user = await find_user_by_email("activa@hispacontact.com")
+            entries = await list_entries({"entity_type": "user", "entity_id": user["_id"]})
+            assert len(entries) == 1
+            assert entries[0]["action"] == "deactivate"
+
+    asyncio.run(scenario())
+
+
+def test_list_history_without_filters_returns_all_entries(use_test_db, capsys) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await cli.run(["create-area", "--name", "Ventas"])
+            capsys.readouterr()
+
+            exit_code = await cli.run(["list-history"])
+
+            assert exit_code == 0
+            payload = json.loads(capsys.readouterr().out)
+            assert payload["status"] == "ok"
+            assert len(payload["entries"]) == 1
+            entry = payload["entries"][0]
+            assert entry["entity_type"] == "area"
+            assert entry["action"] == "create"
+            assert entry["actor_name"] == "CLI"
+            assert entry["changes"] == []
+            assert "occurred_at" in entry
+
+    asyncio.run(scenario())
+
+
+def test_list_history_filters_by_entity_type(use_test_db, capsys) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await cli.run(["create-area", "--name", "Ventas"])
+            capsys.readouterr()
+            await cli.run(["create-status", "--name", "Presencial"])
+            capsys.readouterr()
+
+            exit_code = await cli.run(["list-history", "--entity-type", "area"])
+
+            assert exit_code == 0
+            payload = json.loads(capsys.readouterr().out)
+            assert {entry["entity_type"] for entry in payload["entries"]} == {"area"}
+
+    asyncio.run(scenario())
+
+
+def test_list_history_with_nonexistent_entity_id_returns_not_found_exit_code(
+    use_test_db, capsys
+) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            exit_code = await cli.run(
+                ["list-history", "--entity-type", "employee", "--entity-id", str(ObjectId())]
+            )
+
+            assert exit_code == 3
+            payload = json.loads(capsys.readouterr().err)
+            assert payload["status"] == "error"
+            assert payload["code"] == "entity_not_found"
+
+    asyncio.run(scenario())
+
+
+def test_list_history_with_entity_id_without_entity_type_returns_invalid_arguments_exit_code(
+    use_test_db, capsys
+) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            exit_code = await cli.run(["list-history", "--entity-id", str(ObjectId())])
+
+            assert exit_code == 4
+            payload = json.loads(capsys.readouterr().err)
+            assert payload["status"] == "error"
+            assert payload["code"] == "invalid_arguments"
+            assert payload["message"] == "entity-id requiere especificar entity-type"
+
+    asyncio.run(scenario())
+
+
+def test_list_history_filters_without_matches_returns_ok_and_empty_list(use_test_db, capsys) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await cli.run(["create-area", "--name", "Ventas"])
+            capsys.readouterr()
+
+            exit_code = await cli.run(["list-history", "--actor-id", str(ObjectId())])
+
+            assert exit_code == 0
+            payload = json.loads(capsys.readouterr().out)
+            assert payload["status"] == "ok"
+            assert payload["entries"] == []
 
     asyncio.run(scenario())
