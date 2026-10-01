@@ -22,6 +22,12 @@ def test_login_request_builds_with_both_fields() -> None:
 
 
 def test_login_response_holds_session_token() -> None:
-    login_response = LoginResponse(session_token="tok-abc123")
+    login_response = LoginResponse(session_token="tok-abc123", role="lider")
 
     assert login_response.session_token == "tok-abc123"
+
+
+def test_login_response_holds_role() -> None:
+    login_response = LoginResponse(session_token="tok-abc123", role="lider")
+
+    assert login_response.role == "lider"

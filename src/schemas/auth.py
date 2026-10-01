@@ -8,3 +8,4 @@ class LoginRequest(BaseModel):
 
 class LoginResponse(BaseModel):
     session_token: str
+    role: str

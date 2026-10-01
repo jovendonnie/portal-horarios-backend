@@ -20,7 +20,7 @@ async def login(data: LoginRequest) -> LoginResponse:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, str(exc)) from exc
 
     token = await session_service.create_session(user)
-    return LoginResponse(session_token=token)
+    return LoginResponse(session_token=token, role=user["role"])
 
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
