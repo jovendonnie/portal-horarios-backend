@@ -526,3 +526,84 @@ def test_set_enabled_already_disabled_does_not_generate_extra_history_entry(
             assert len(entries) == 1
 
     asyncio.run(scenario())
+
+
+def test_create_entry_marks_new_status_as_not_predefined(use_test_db) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await ensure_indexes("estados")
+
+            entry = await catalog_service.create_entry("estados", "Estado", "Presencial", ACTOR)
+
+            assert entry["is_predefined"] is False
+
+    asyncio.run(scenario())
+
+
+def test_create_entry_does_not_add_is_predefined_to_areas(use_test_db) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await ensure_indexes("areas")
+
+            entry = await catalog_service.create_entry("areas", "Área", "Ventas", ACTOR)
+
+            assert "is_predefined" not in entry
+
+    asyncio.run(scenario())
+
+
+def test_seed_predefined_estados_creates_the_seven_from_an_empty_catalog(use_test_db) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await ensure_indexes("estados")
+
+            entries = await catalog_service.seed_predefined_estados(ACTOR)
+
+            assert [entry["name"] for entry in entries] == catalog_service.PREDEFINED_STATUS_NAMES
+            assert all(entry["is_predefined"] is True for entry in entries)
+            assert all(entry["is_enabled"] is True for entry in entries)
+
+    asyncio.run(scenario())
+
+
+def test_seed_predefined_estados_recognizes_existing_entry_by_name_without_duplicating(
+    use_test_db,
+) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await ensure_indexes("estados")
+            await catalog_service.create_entry("estados", "Estado", "Otro habilitado", ACTOR)
+            existing = await catalog_service.create_entry("estados", "Estado", "Presencial", ACTOR)
+            await catalog_service.set_enabled(
+                "estados", "Estado", existing["_id"], False, ACTOR, _count_assigned_stub
+            )
+
+            entries = await catalog_service.seed_predefined_estados(ACTOR)
+
+            presencial = next(entry for entry in entries if entry["name"] == "Presencial")
+            assert presencial["_id"] == existing["_id"]
+            assert presencial["is_predefined"] is True
+            assert presencial["is_enabled"] is False
+
+            all_entries = await catalog_service.list_entries("estados")
+            assert len([e for e in all_entries if e["name"] == "Presencial"]) == 1
+
+    asyncio.run(scenario())
+
+
+def test_seed_predefined_estados_is_idempotent(use_test_db) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await ensure_indexes("estados")
+
+            first = await catalog_service.seed_predefined_estados(ACTOR)
+            second = await catalog_service.seed_predefined_estados(ACTOR)
+
+            assert {e["_id"] for e in first} == {e["_id"] for e in second}
+            all_entries = await catalog_service.list_entries("estados")
+            assert len(all_entries) == len(catalog_service.PREDEFINED_STATUS_NAMES)
+
+            history_entries = await list_history_entries({"entity_type": "status"})
+            assert len(history_entries) == len(catalog_service.PREDEFINED_STATUS_NAMES)
+
+    asyncio.run(scenario())

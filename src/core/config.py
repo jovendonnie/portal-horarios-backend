@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     max_failed_attempts: int = 5
     lockout_minutes: int = 15
     session_inactivity_minutes: int = 30
+    cors_origins: str = "http://localhost:3000"
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 

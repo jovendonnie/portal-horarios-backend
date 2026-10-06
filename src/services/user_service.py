@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from src.core.database import start_transaction
+from src.core.security import generate_temporary_password, hash_password
 from src.models.session import delete_sessions_by_user
 from src.models.user import find_user_by_email, update_user
 from src.services import history_service
@@ -53,3 +54,41 @@ async def deactivate_user(actor: dict[str, Any], email: str) -> dict[str, Any]:
             raise
 
     return {"email": email, "is_active": False, "sessions_invalidated": sessions_invalidated}
+
+
+async def reset_password(actor: dict[str, Any], email: str) -> dict[str, Any]:
+    """Resetea la contraseña de una cuenta e invalida sus sesiones activas (RF-8).
+
+    Genera una contraseña temporal nueva, igual que el alta de cuentas
+    (RF-3). La escritura del nuevo hash, la invalidación de sesiones y la
+    entrada de auditoría `reset_password` viajan en la misma transacción. El
+    historial no guarda el hash ni la contraseña temporal, solo que el campo
+    cambió (RF-7).
+    """
+    user = await find_user_by_email(email)
+    if user is None:
+        raise UserNotFoundError()
+
+    temporary_password = generate_temporary_password()
+    ahora = _utcnow()
+    changes = [{"field": "password_hash", "old_value": None, "new_value": None}]
+
+    async with start_transaction() as session:
+        try:
+            await update_user(
+                email, {"password_hash": hash_password(temporary_password)}, session=session
+            )
+            sessions_invalidated = await delete_sessions_by_user(user["_id"], session=session)
+            await history_service.record_change(
+                session, "user", user["_id"], "reset_password", changes, actor, ahora
+            )
+            await session.commit_transaction()
+        except Exception:
+            await session.abort_transaction()
+            raise
+
+    return {
+        "email": email,
+        "temporary_password": temporary_password,
+        "sessions_invalidated": sessions_invalidated,
+    }

@@ -7,7 +7,7 @@ from bson import ObjectId
 from fastapi import HTTPException
 
 from conftest import mongo_test_session
-from src.api.deps import require_admin
+from src.api.deps import require_admin, require_read
 from src.api.routes import employees
 from src.models import catalog as catalog_model
 from src.models.employee import ensure_indexes
@@ -52,8 +52,8 @@ def _actor_dependency(route_function):
 
 def test_employee_routes_require_admin() -> None:
     assert _actor_dependency(employees.create_employee_route) is require_admin
-    assert _actor_dependency(employees.list_employees_route) is require_admin
-    assert _actor_dependency(employees.get_employee_route) is require_admin
+    assert _actor_dependency(employees.list_employees_route) is require_read
+    assert _actor_dependency(employees.get_employee_route) is require_read
     assert _actor_dependency(employees.update_employee_route) is require_admin
     assert _actor_dependency(employees.update_employee_status_route) is require_admin
 

@@ -6,7 +6,7 @@ from bson import ObjectId
 from bson.errors import InvalidId
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from src.api.deps import require_admin
+from src.api.deps import require_admin, require_read
 from src.schemas.employee import (
     EmployeeCreate,
     EmployeeOut,
@@ -51,12 +51,12 @@ async def create_employee_route(data: EmployeeCreate, actor: dict = Depends(requ
 
 
 @router.get("", response_model=list[EmployeeOut])
-async def list_employees_route(_actor: dict = Depends(require_admin)) -> list[EmployeeOut]:
+async def list_employees_route(_actor: dict = Depends(require_read)) -> list[EmployeeOut]:
     return await list_employees()
 
 
 @router.get("/{employee_id}", response_model=EmployeeOut)
-async def get_employee_route(employee_id: str, _actor: dict = Depends(require_admin)) -> EmployeeOut:
+async def get_employee_route(employee_id: str, _actor: dict = Depends(require_read)) -> EmployeeOut:
     try:
         return await get_employee(_parse_employee_id(employee_id))
     except EmployeeNotFoundError as exc:

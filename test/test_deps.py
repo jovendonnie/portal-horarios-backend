@@ -5,7 +5,7 @@ import pytest
 from fastapi import HTTPException
 
 from conftest import mongo_test_session
-from src.api.deps import get_current_user, get_session_token, require_admin
+from src.api.deps import get_current_user, get_session_token, require_admin, require_read
 from src.models.user import insert_user
 from src.services import session_service
 
@@ -100,6 +100,57 @@ def test_require_admin_rejects_non_admin_role(use_test_db) -> None:
 
             with pytest.raises(HTTPException) as exc_info:
                 await require_admin(user=lider)
+
+            assert exc_info.value.status_code == 403
+
+    asyncio.run(scenario())
+
+
+def test_require_read_allows_admin_role(use_test_db) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            admin = await _insert_and_fetch_user("admin2@hispacontact.com", role="admin")
+
+            result = await require_read(user=admin)
+
+            assert result == admin
+
+    asyncio.run(scenario())
+
+
+def test_require_read_allows_gestion_humana_role(use_test_db) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            gestion_humana = await _insert_and_fetch_user(
+                "gestion_humana@hispacontact.com", role="gestion_humana"
+            )
+
+            result = await require_read(user=gestion_humana)
+
+            assert result == gestion_humana
+
+    asyncio.run(scenario())
+
+
+def test_require_read_allows_lider_role(use_test_db) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            lider = await _insert_and_fetch_user("lider2@hispacontact.com", role="lider")
+
+            result = await require_read(user=lider)
+
+            assert result == lider
+
+    asyncio.run(scenario())
+
+
+def test_require_read_rejects_unknown_role(use_test_db) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            invitado = await _insert_and_fetch_user("invitado@hispacontact.com", role="invitado")
+
+            with pytest.raises(HTTPException) as exc_info:
+                await require_read(user=invitado)
 
             assert exc_info.value.status_code == 403
 

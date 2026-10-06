@@ -17,6 +17,7 @@ class EstadoOut(BaseModel):
     id: str = Field(alias="_id")
     name: str
     is_enabled: bool
+    is_predefined: bool = False
     created_at: datetime
     created_by: str | None = None
     updated_at: datetime | None = None

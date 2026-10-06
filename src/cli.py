@@ -86,11 +86,25 @@ def _build_parser() -> _ArgumentParser:
     create_admin.add_argument("--name", required=True)
     create_admin.add_argument("--email", required=True)
 
+    create_user_parser = subparsers.add_parser(
+        "create-user", help="Crea una cuenta con rol gestion_humana o lider"
+    )
+    create_user_parser.add_argument("--name", required=True)
+    create_user_parser.add_argument("--email", required=True)
+    create_user_parser.add_argument(
+        "--role", required=True, choices=["gestion_humana", "lider"]
+    )
+
     unlock_user = subparsers.add_parser("unlock-user", help="Desbloquea una cuenta bloqueada")
     unlock_user.add_argument("--email", required=True)
 
     deactivate_user = subparsers.add_parser("deactivate-user", help="Desactiva una cuenta")
     deactivate_user.add_argument("--email", required=True)
+
+    reset_password_parser = subparsers.add_parser(
+        "reset-password", help="Resetea la contraseña de una cuenta"
+    )
+    reset_password_parser.add_argument("--email", required=True)
 
     create_employee_parser = subparsers.add_parser("create-employee", help="Crea un empleado")
     create_employee_parser.add_argument("--name", required=True)
@@ -132,6 +146,11 @@ def _build_parser() -> _ArgumentParser:
 
     create_status_parser = subparsers.add_parser("create-status", help="Crea un Estado")
     create_status_parser.add_argument("--name", required=True)
+
+    subparsers.add_parser(
+        "seed-predefined-statuses",
+        help="Asegura que los 7 Estados predefinidos existan y estén marcados como tales",
+    )
 
     list_statuses_parser = subparsers.add_parser("list-statuses", help="Lista los Estados")
     status_filter_group = list_statuses_parser.add_mutually_exclusive_group()
@@ -178,6 +197,20 @@ async def _create_admin(name: str, email: str) -> dict[str, Any]:
     }
 
 
+async def _create_user(name: str, email: str, role: str) -> dict[str, Any]:
+    _validate_email(email)
+    data = UserCreate(full_name=name, email=email, role=role)
+    result = await register_user({"_id": None, "full_name": "CLI"}, data)
+    return {
+        "user": {
+            "id": str(result.user["_id"]),
+            "email": result.user["email"],
+            "role": result.user["role"],
+        },
+        "temporary_password": result.temporary_password,
+    }
+
+
 async def _unlock_user(email: str) -> dict[str, Any]:
     _validate_email(email)
     user = await find_user_by_email(email)
@@ -191,6 +224,11 @@ async def _unlock_user(email: str) -> dict[str, Any]:
 async def _deactivate_user(email: str) -> dict[str, Any]:
     _validate_email(email)
     return await user_service.deactivate_user({"_id": None, "full_name": "CLI"}, email)
+
+
+async def _reset_password(email: str) -> dict[str, Any]:
+    _validate_email(email)
+    return await user_service.reset_password({"_id": None, "full_name": "CLI"}, email)
 
 
 def _employee_payload(employee: EmployeeOut) -> dict[str, Any]:
@@ -276,8 +314,11 @@ async def _set_employee_status(employee_id: str, status: str) -> dict[str, Any]:
     return {"employee": _employee_status_payload(employee)}
 
 
-def _entry_payload(entry: dict[str, Any]) -> dict[str, Any]:
-    return {"id": str(entry["_id"]), "name": entry["name"], "is_enabled": entry["is_enabled"]}
+def _entry_payload(entry: dict[str, Any], *, include_predefined: bool = False) -> dict[str, Any]:
+    payload = {"id": str(entry["_id"]), "name": entry["name"], "is_enabled": entry["is_enabled"]}
+    if include_predefined:
+        payload["is_predefined"] = entry.get("is_predefined", False)
+    return payload
 
 
 async def _count_assigned_stub(_entry_id: Any) -> int:
@@ -296,12 +337,20 @@ async def _create_catalog_entry(collection_name: str, entity_label: str, name: s
     entry = await catalog_service.create_entry(
         collection_name, entity_label, name, {"_id": None, "full_name": "CLI"}
     )
-    return {"entry": _entry_payload(entry)}
+    return {"entry": _entry_payload(entry, include_predefined=collection_name == "estados")}
+
+
+async def _seed_predefined_statuses() -> dict[str, Any]:
+    entries = await catalog_service.seed_predefined_estados({"_id": None, "full_name": "Sistema"})
+    return {"entries": [_entry_payload(entry, include_predefined=True) for entry in entries]}
 
 
 async def _list_catalog_entries(collection_name: str, enabled: bool | None) -> dict[str, Any]:
     entries = await catalog_service.list_entries(collection_name, enabled)
-    return {"entries": [_entry_payload(entry) for entry in entries]}
+    include_predefined = collection_name == "estados"
+    return {
+        "entries": [_entry_payload(entry, include_predefined=include_predefined) for entry in entries]
+    }
 
 
 async def _update_catalog_entry(
@@ -314,7 +363,7 @@ async def _update_catalog_entry(
         name,
         {"_id": None, "full_name": "CLI"},
     )
-    return {"entry": _entry_payload(entry)}
+    return {"entry": _entry_payload(entry, include_predefined=collection_name == "estados")}
 
 
 async def _set_catalog_enabled(
@@ -328,7 +377,9 @@ async def _set_catalog_enabled(
         {"_id": None, "full_name": "CLI"},
         _count_assigned_stub,
     )
-    payload: dict[str, Any] = {"entry": _entry_payload(entry)}
+    payload: dict[str, Any] = {
+        "entry": _entry_payload(entry, include_predefined=collection_name == "estados")
+    }
     if not enabled:
         payload["affected_employees"] = affected or 0
     return payload
@@ -385,10 +436,14 @@ def _enabled_filter(args: argparse.Namespace) -> bool | None:
 async def _dispatch(args: argparse.Namespace) -> dict[str, Any]:
     if args.command == "create-admin":
         return await _create_admin(args.name, args.email)
+    if args.command == "create-user":
+        return await _create_user(args.name, args.email, args.role)
     if args.command == "unlock-user":
         return await _unlock_user(args.email)
     if args.command == "deactivate-user":
         return await _deactivate_user(args.email)
+    if args.command == "reset-password":
+        return await _reset_password(args.email)
     if args.command == "create-employee":
         return await _create_employee(args.name, args.position, args.area, args.status)
     if args.command == "list-employees":
@@ -409,6 +464,8 @@ async def _dispatch(args: argparse.Namespace) -> dict[str, Any]:
         return await _set_catalog_enabled("areas", "Área", args.id, False)
     if args.command == "create-status":
         return await _create_catalog_entry("estados", "Estado", args.name)
+    if args.command == "seed-predefined-statuses":
+        return await _seed_predefined_statuses()
     if args.command == "list-statuses":
         return await _list_catalog_entries("estados", _enabled_filter(args))
     if args.command == "update-status":

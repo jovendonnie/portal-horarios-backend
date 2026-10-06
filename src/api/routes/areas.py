@@ -4,7 +4,7 @@ from bson import ObjectId
 from bson.errors import InvalidId
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from src.api.deps import require_admin
+from src.api.deps import require_admin, require_read
 from src.schemas.area import AreaCreate, AreaDisableOut, AreaOut, AreaUpdate
 from src.services import catalog_service
 
@@ -39,7 +39,7 @@ async def create_entry_route(data: AreaCreate, actor: dict = Depends(require_adm
 
 @router.get("", response_model=list[AreaOut])
 async def list_entries_route(
-    enabled: bool | None = None, _actor: dict = Depends(require_admin)
+    enabled: bool | None = None, _actor: dict = Depends(require_read)
 ) -> list[AreaOut]:
     entries = await catalog_service.list_entries(COLLECTION_NAME, enabled)
     return [AreaOut(**entry) for entry in entries]

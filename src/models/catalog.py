@@ -23,6 +23,7 @@ async def insert_entry(
     actor_id: Any,
     ahora: datetime,
     session: AsyncIOMotorClientSession | None = None,
+    is_predefined: bool | None = None,
 ) -> Any:
     db = get_database()
     document = {
@@ -33,6 +34,8 @@ async def insert_entry(
         "updated_at": None,
         "updated_by": None,
     }
+    if is_predefined is not None:
+        document["is_predefined"] = is_predefined
     result = await db[collection_name].insert_one(document, session=session)
     return result.inserted_id
 
@@ -69,6 +72,20 @@ async def update_entry_name(
     result = await db[collection_name].update_one(
         {"_id": entry_id},
         {"$set": {"name": name.strip(), "updated_at": ahora, "updated_by": actor_id}},
+        session=session,
+    )
+    return result.modified_count > 0
+
+
+async def mark_entry_predefined(
+    collection_name: str,
+    entry_id: Any,
+    session: AsyncIOMotorClientSession | None = None,
+) -> bool:
+    db = get_database()
+    result = await db[collection_name].update_one(
+        {"_id": entry_id},
+        {"$set": {"is_predefined": True}},
         session=session,
     )
     return result.modified_count > 0

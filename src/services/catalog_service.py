@@ -8,6 +8,16 @@ from src.services import history_service
 
 _ENTITY_TYPES: dict[str, str] = {"areas": "area", "estados": "status"}
 
+PREDEFINED_STATUS_NAMES: list[str] = [
+    "Presencial",
+    "Virtual/Casa",
+    "Permiso",
+    "Vacaciones",
+    "Licencia",
+    "Incapacidad",
+    "Día libre",
+]
+
 
 class InvalidNameError(Exception):
     def __init__(self) -> None:
@@ -50,11 +60,17 @@ async def create_entry(
         raise DuplicateEntryError(entity_label)
 
     ahora = datetime.now(timezone.utc)
+    is_predefined = False if collection_name == "estados" else None
 
     async with start_transaction() as session:
         try:
             entry_id = await catalog.insert_entry(
-                collection_name, trimmed, actor.get("_id"), ahora, session=session
+                collection_name,
+                trimmed,
+                actor.get("_id"),
+                ahora,
+                session=session,
+                is_predefined=is_predefined,
             )
             await history_service.record_change(
                 session, _ENTITY_TYPES[collection_name], entry_id, "create", [], actor, ahora
@@ -65,6 +81,47 @@ async def create_entry(
             raise
 
     return await catalog.find_entry_by_id(collection_name, entry_id)
+
+
+async def seed_predefined_estados(actor: dict[str, Any]) -> list[dict[str, Any]]:
+    """Asegura que los 7 Estados predefinidos existan y estén marcados como
+    tales, sin duplicar ni alterar los que ya existían por nombre (RF-1,
+    RNF-3 de spec 005)."""
+    results: list[dict[str, Any]] = []
+    for name in PREDEFINED_STATUS_NAMES:
+        existing = await catalog.find_entry_by_name("estados", name)
+        ahora = datetime.now(timezone.utc)
+
+        if existing is not None:
+            if not existing.get("is_predefined", False):
+                diffs = [{"field": "is_predefined", "old_value": False, "new_value": True}]
+                async with start_transaction() as session:
+                    try:
+                        await catalog.mark_entry_predefined("estados", existing["_id"], session=session)
+                        await history_service.record_change(
+                            session, "status", existing["_id"], "update", diffs, actor, ahora
+                        )
+                        await session.commit_transaction()
+                    except Exception:
+                        await session.abort_transaction()
+                        raise
+            results.append(await catalog.find_entry_by_id("estados", existing["_id"]))
+        else:
+            async with start_transaction() as session:
+                try:
+                    entry_id = await catalog.insert_entry(
+                        "estados", name, actor.get("_id"), ahora, session=session, is_predefined=True
+                    )
+                    await history_service.record_change(
+                        session, "status", entry_id, "create", [], actor, ahora
+                    )
+                    await session.commit_transaction()
+                except Exception:
+                    await session.abort_transaction()
+                    raise
+            results.append(await catalog.find_entry_by_id("estados", entry_id))
+
+    return results
 
 
 async def list_entries(

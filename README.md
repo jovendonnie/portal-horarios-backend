@@ -46,7 +46,13 @@ python -m src.cli deactivate-user --email usuario@hispacontact.com
 python -m src.cli create-employee --name "Nombre" --position lider --area "Área"
 python -m src.cli list-employees
 python -m src.cli update-employee --id <id> [--name ...] [--position ...] [--area ...]
+python -m src.cli seed-predefined-statuses
 ```
+
+`seed-predefined-statuses` asegura que los 7 Estados predefinidos del sistema
+(Presencial, Virtual/Casa, Permiso, Vacaciones, Licencia, Incapacidad, Día
+libre) existan en el catálogo marcados como tales; es idempotente, se corre
+una vez por entorno (ver `specs/005-estados-predefinidos/`).
 
 ## Tests
 
@@ -97,7 +103,7 @@ src/
 | GET | `/health` | No | Verifica conexión a MongoDB |
 | POST | `/auth/login` | No | Login con correo/contraseña; bloquea tras `max_failed_attempts` fallidos |
 | POST | `/auth/logout` | Sesión válida | Invalida la sesión activa |
-| POST | `/users` | Admin | Da de alta una cuenta (`junta_directiva` o `lider`) con contraseña temporal |
+| POST | `/users` | Admin | Da de alta una cuenta (`gestion_humana` o `lider`) con contraseña temporal |
 | POST | `/employees` | Admin | Crea un empleado (`recursos_humanos` o `lider`) |
 | GET | `/employees` | Admin | Lista todos los empleados |
 | GET | `/employees/{id}` | Admin | Detalle de un empleado |

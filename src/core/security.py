@@ -21,3 +21,7 @@ def verify_password(password: str, password_hash: str) -> bool:
 
 def generate_session_token() -> str:
     return secrets.token_urlsafe(32)
+
+
+def generate_temporary_password() -> str:
+    return secrets.token_urlsafe(9)

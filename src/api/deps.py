@@ -27,3 +27,10 @@ async def require_admin(user: dict[str, Any] = Depends(get_current_user)) -> dic
     if user.get("role") != "admin":
         raise HTTPException(status.HTTP_403_FORBIDDEN, "No autorizado")
     return user
+
+
+async def require_read(user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
+    """Exige un rol autenticado con acceso de lectura (admin, gestion_humana o lider), o responde 403."""
+    if user.get("role") not in {"admin", "gestion_humana", "lider"}:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "No autorizado")
+    return user

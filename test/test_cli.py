@@ -77,13 +77,16 @@ def test_help_lists_all_subcommands() -> None:
     help_text = parser.format_help()
 
     assert "create-admin" in help_text
+    assert "create-user" in help_text
     assert "unlock-user" in help_text
     assert "deactivate-user" in help_text
+    assert "reset-password" in help_text
     assert "create-employee" in help_text
     assert "list-employees" in help_text
     assert "update-employee" in help_text
     assert "set-employee-status" in help_text
     assert "list-history" in help_text
+    assert "seed-predefined-statuses" in help_text
     for commands in CATALOG_COMMANDS:
         assert commands["create"] in help_text
         assert commands["list"] in help_text
@@ -127,6 +130,87 @@ def test_create_admin_duplicate_email_returns_conflict_exit_code(use_test_db, ca
             second = await cli.run(
                 ["create-admin", "--name", "Ana Pérez", "--email", "ana@hispacontact.com"]
             )
+
+            assert second == 2
+            payload = json.loads(capsys.readouterr().err)
+            assert payload["status"] == "error"
+            assert payload["code"] == "email_taken"
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("role", ["gestion_humana", "lider"])
+def test_create_user_success_returns_ok_and_temporary_password(use_test_db, capsys, role) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            exit_code = await cli.run(
+                [
+                    "create-user",
+                    "--name",
+                    "Ana Pérez",
+                    "--email",
+                    "ana@hispacontact.com",
+                    "--role",
+                    role,
+                ]
+            )
+
+            assert exit_code == 0
+            payload = json.loads(capsys.readouterr().out)
+            assert payload["status"] == "ok"
+            assert payload["user"]["email"] == "ana@hispacontact.com"
+            assert payload["user"]["role"] == role
+            assert "temporary_password" in payload
+
+            user = await find_user_by_email("ana@hispacontact.com")
+            assert user["role"] == role
+            assert verify_password(payload["temporary_password"], user["password_hash"])
+
+    asyncio.run(scenario())
+
+
+def test_create_user_invalid_role_returns_invalid_arguments_exit_code(use_test_db, capsys) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            exit_code = await cli.run(
+                [
+                    "create-user",
+                    "--name",
+                    "Ana Pérez",
+                    "--email",
+                    "ana@hispacontact.com",
+                    "--role",
+                    "gerente",
+                ]
+            )
+
+            assert exit_code == 4
+            payload = json.loads(capsys.readouterr().err)
+            assert payload["status"] == "error"
+            assert payload["code"] == "invalid_arguments"
+
+    asyncio.run(scenario())
+
+
+def test_create_user_duplicate_email_returns_conflict_exit_code(use_test_db, capsys) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await ensure_indexes()
+
+            create_args = [
+                "create-user",
+                "--name",
+                "Ana Pérez",
+                "--email",
+                "ana@hispacontact.com",
+                "--role",
+                "lider",
+            ]
+            first = await cli.run(create_args)
+            assert first == 0
+            capsys.readouterr()
+
+            second = await cli.run(create_args)
 
             assert second == 2
             payload = json.loads(capsys.readouterr().err)
@@ -213,6 +297,55 @@ def test_deactivate_user_not_found_returns_not_found_exit_code(use_test_db, caps
     async def scenario() -> None:
         async with mongo_test_session():
             exit_code = await cli.run(["deactivate-user", "--email", "no-existe@hispacontact.com"])
+
+            assert exit_code == 3
+            payload = json.loads(capsys.readouterr().err)
+            assert payload["status"] == "error"
+            assert payload["code"] == "user_not_found"
+
+    asyncio.run(scenario())
+
+
+def test_reset_password_success_invalidates_sessions_and_returns_temporary_password(
+    use_test_db, capsys
+) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            user_id = await insert_user(_make_user("activa@hispacontact.com"))
+            now = datetime.now(timezone.utc).replace(tzinfo=None)
+            token_a, token_b = "token-a", "token-b"
+            for token in (token_a, token_b):
+                await insert_session(
+                    {
+                        "session_token": token,
+                        "user_id": user_id,
+                        "created_at": now,
+                        "last_activity_at": now,
+                        "expires_at": now + timedelta(minutes=30),
+                    }
+                )
+
+            exit_code = await cli.run(["reset-password", "--email", "activa@hispacontact.com"])
+
+            assert exit_code == 0
+            payload = json.loads(capsys.readouterr().out)
+            assert payload["status"] == "ok"
+            assert payload["email"] == "activa@hispacontact.com"
+            assert payload["sessions_invalidated"] == 2
+            assert "temporary_password" in payload
+
+            user = await find_user_by_email("activa@hispacontact.com")
+            assert verify_password(payload["temporary_password"], user["password_hash"])
+            assert await find_session_by_token(token_a) is None
+            assert await find_session_by_token(token_b) is None
+
+    asyncio.run(scenario())
+
+
+def test_reset_password_not_found_returns_not_found_exit_code(use_test_db, capsys) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            exit_code = await cli.run(["reset-password", "--email", "no-existe@hispacontact.com"])
 
             assert exit_code == 3
             payload = json.loads(capsys.readouterr().err)
@@ -984,6 +1117,66 @@ def test_enable_catalog_entry_not_found_returns_not_found_exit_code(
             payload = json.loads(capsys.readouterr().err)
             assert payload["status"] == "error"
             assert payload["code"] == commands["not_found"]
+
+    asyncio.run(scenario())
+
+
+def test_seed_predefined_statuses_creates_the_seven(use_test_db, capsys) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await ensure_catalog_indexes("estados")
+
+            exit_code = await cli.run(["seed-predefined-statuses"])
+
+            assert exit_code == 0
+            payload = json.loads(capsys.readouterr().out)
+            assert payload["status"] == "ok"
+            assert len(payload["entries"]) == 7
+            assert all(entry["is_predefined"] is True for entry in payload["entries"])
+
+    asyncio.run(scenario())
+
+
+def test_seed_predefined_statuses_is_idempotent(use_test_db, capsys) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await ensure_catalog_indexes("estados")
+            await cli.run(["seed-predefined-statuses"])
+            capsys.readouterr()
+
+            exit_code = await cli.run(["seed-predefined-statuses"])
+
+            assert exit_code == 0
+            payload = json.loads(capsys.readouterr().out)
+            assert len(payload["entries"]) == 7
+
+    asyncio.run(scenario())
+
+
+def test_create_status_marks_entry_as_not_predefined(use_test_db, capsys) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await ensure_catalog_indexes("estados")
+
+            exit_code = await cli.run(["create-status", "--name", "Presencial"])
+
+            assert exit_code == 0
+            payload = json.loads(capsys.readouterr().out)
+            assert payload["entry"]["is_predefined"] is False
+
+    asyncio.run(scenario())
+
+
+def test_create_area_does_not_include_is_predefined(use_test_db, capsys) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await ensure_catalog_indexes("areas")
+
+            exit_code = await cli.run(["create-area", "--name", "Ventas"])
+
+            assert exit_code == 0
+            payload = json.loads(capsys.readouterr().out)
+            assert "is_predefined" not in payload["entry"]
 
     asyncio.run(scenario())
 

@@ -1,5 +1,6 @@
 from src.core.security import (
     generate_session_token,
+    generate_temporary_password,
     hash_password,
     verify_password,
 )
@@ -35,3 +36,10 @@ def test_generate_session_token_produces_different_tokens() -> None:
     second_token = generate_session_token()
 
     assert first_token != second_token
+
+
+def test_generate_temporary_password_produces_different_passwords() -> None:
+    first_password = generate_temporary_password()
+    second_password = generate_temporary_password()
+
+    assert first_password != second_password

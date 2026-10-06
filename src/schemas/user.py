@@ -7,7 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 class UserCreate(BaseModel):
     full_name: str
     email: str
-    role: Literal["junta_directiva", "lider"]
+    role: Literal["gestion_humana", "lider"]
 
 
 class UserOut(BaseModel):

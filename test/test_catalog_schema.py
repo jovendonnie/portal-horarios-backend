@@ -75,5 +75,23 @@ def test_out_stringifies_object_ids_from_mongo_document(create_cls, update_cls, 
     assert entry_out.updated_by is None
 
 
-def test_estado_out_exposes_same_field_names_as_area_out() -> None:
-    assert set(EstadoOut.model_fields) == set(AreaOut.model_fields)
+def test_estado_out_exposes_same_field_names_as_area_out_plus_is_predefined() -> None:
+    """Spec 005: EstadoOut gana `is_predefined`, exclusivo de Estados (RNF-2)."""
+    assert set(EstadoOut.model_fields) == set(AreaOut.model_fields) | {"is_predefined"}
+
+
+def test_estado_out_defaults_is_predefined_to_false_when_missing_from_document() -> None:
+    document = _make_document()
+
+    entry_out = EstadoOut(**document)
+
+    assert entry_out.is_predefined is False
+
+
+def test_estado_out_respects_is_predefined_true_from_document() -> None:
+    document = _make_document()
+    document["is_predefined"] = True
+
+    entry_out = EstadoOut(**document)
+
+    assert entry_out.is_predefined is True

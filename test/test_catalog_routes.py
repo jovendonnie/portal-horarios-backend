@@ -6,7 +6,7 @@ from bson import ObjectId
 from fastapi import HTTPException, status
 
 from conftest import mongo_test_session
-from src.api.deps import require_admin
+from src.api.deps import require_admin, require_read
 from src.api.routes import areas, statuses
 from src.models.catalog import ensure_indexes
 from src.schemas.area import AreaCreate, AreaUpdate
@@ -36,7 +36,7 @@ def _status_code_for(module, endpoint) -> int | None:
 @pytest.mark.parametrize("module,collection_name,create_cls,update_cls,entry_field", CATALOGS)
 def test_routes_require_admin(module, collection_name, create_cls, update_cls, entry_field) -> None:
     assert _actor_dependency(module.create_entry_route) is require_admin
-    assert _actor_dependency(module.list_entries_route) is require_admin
+    assert _actor_dependency(module.list_entries_route) is require_read
     assert _actor_dependency(module.rename_entry_route) is require_admin
     assert _actor_dependency(module.disable_entry_route) is require_admin
     assert _actor_dependency(module.enable_entry_route) is require_admin

@@ -1,6 +1,5 @@
 """Lógica de negocio de autenticación y alta de cuentas (RF-1, RF-2, RF-3, RF-7)."""
 
-import secrets
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -9,7 +8,7 @@ from pymongo.errors import DuplicateKeyError
 
 from src.core.config import settings
 from src.core.database import start_transaction
-from src.core.security import hash_password, verify_password
+from src.core.security import generate_temporary_password, hash_password, verify_password
 from src.models.user import find_user_by_email, insert_user, update_user
 from src.schemas.user import UserCreate
 from src.services import history_service
@@ -49,11 +48,6 @@ class RegisteredUser:
 def _utcnow() -> datetime:
     """Hora actual en UTC, naive: coincide con el formato en que Motor devuelve los campos de Mongo."""
     return datetime.now(timezone.utc).replace(tzinfo=None)
-
-
-def _generate_temporary_password() -> str:
-    """Contraseña temporal aleatoria; el admin la comunica fuera de banda (decisión #6 de plan.md)."""
-    return secrets.token_urlsafe(9)
 
 
 async def authenticate(email: str, password: str) -> dict[str, Any]:
@@ -123,7 +117,7 @@ async def register_user(actor: dict[str, Any], data: UserCreate) -> RegisteredUs
     transacción (RF-3, RNF-1): si el registro en `history_entries` falla,
     la cuenta creada se revierte.
     """
-    temporary_password = _generate_temporary_password()
+    temporary_password = generate_temporary_password()
     document = {
         "full_name": data.full_name,
         "email": data.email,
