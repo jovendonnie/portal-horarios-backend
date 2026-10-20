@@ -10,6 +10,7 @@ from src.models.user import (
     find_user_by_email,
     find_user_by_id,
     insert_user,
+    list_users,
     update_user,
 )
 
@@ -117,6 +118,30 @@ def test_insert_user_behaves_the_same_with_explicit_session_none(use_test_db) ->
             assert without_arg is not None
             assert with_none is not None
             assert without_arg != with_none
+
+    asyncio.run(scenario())
+
+
+def test_list_users_returns_all_inserted_accounts(use_test_db) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await insert_user(_make_user("lista-a@hispacontact.com"))
+            await insert_user(_make_user("lista-b@hispacontact.com"))
+
+            users = await list_users()
+
+            assert {user["email"] for user in users} == {
+                "lista-a@hispacontact.com",
+                "lista-b@hispacontact.com",
+            }
+
+    asyncio.run(scenario())
+
+
+def test_list_users_returns_empty_list_when_no_accounts(use_test_db) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            assert await list_users() == []
 
     asyncio.run(scenario())
 

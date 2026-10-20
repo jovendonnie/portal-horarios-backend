@@ -175,6 +175,34 @@ def test_reset_password_not_found_raises(use_test_db) -> None:
     asyncio.run(scenario())
 
 
+def test_list_users_normalizes_legacy_admin_role(use_test_db) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await ensure_indexes()
+            await insert_user({**_make_user("admin-legacy@hispacontact.com"), "role": "admin"})
+
+            users = await user_service.list_users()
+
+            assert len(users) == 1
+            assert users[0].role == "gestion_humana"
+
+    asyncio.run(scenario())
+
+
+def test_list_users_excludes_password_hash(use_test_db) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await ensure_indexes()
+            await insert_user(_make_user("ana@hispacontact.com"))
+
+            users = await user_service.list_users()
+
+            assert len(users) == 1
+            assert "password_hash" not in users[0].model_dump()
+
+    asyncio.run(scenario())
+
+
 def test_reset_password_atomicity_reverts_when_history_insert_fails(
     use_test_db, monkeypatch
 ) -> None:

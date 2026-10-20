@@ -98,6 +98,24 @@ def test_create_employee_rejects_invalid_position(use_test_db) -> None:
     asyncio.run(scenario())
 
 
+def test_create_employee_accepts_practicante_position(use_test_db) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await ensure_indexes()
+
+            employee = await employee_service.create_employee(
+                ACTOR, await _make_create(position="practicante")
+            )
+
+            assert employee.position == "practicante"
+
+    asyncio.run(scenario())
+
+
+def test_cargos_validos_incluye_practicante() -> None:
+    assert employee_service.CARGOS_VALIDOS == {"recursos_humanos", "lider", "practicante"}
+
+
 # --- create_employee: validación de catálogo (T032, T033) ---
 
 

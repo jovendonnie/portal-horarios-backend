@@ -47,3 +47,8 @@ async def update_user(
         {"email": email}, {"$set": updates}, session=session
     )
     return result.modified_count > 0
+
+
+async def list_users() -> list[dict[str, Any]]:
+    db = get_database()
+    return await db[COLLECTION_NAME].find({}).to_list(length=None)

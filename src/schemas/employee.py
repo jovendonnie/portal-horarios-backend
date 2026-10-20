@@ -3,17 +3,19 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+EmployeePosition = Literal["recursos_humanos", "lider", "practicante"]
+
 
 class EmployeeCreate(BaseModel):
     full_name: str
-    position: Literal["recursos_humanos", "lider"]
+    position: EmployeePosition
     area_id: str
     status_id: str
 
 
 class EmployeeUpdate(BaseModel):
     full_name: str | None = None
-    position: Literal["recursos_humanos", "lider"] | None = None
+    position: EmployeePosition | None = None
     area_id: str | None = None
 
 

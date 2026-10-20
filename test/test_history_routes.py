@@ -7,11 +7,12 @@ from bson import ObjectId
 from fastapi import HTTPException
 
 from conftest import mongo_test_session
-from src.api.deps import require_admin
+from src.api.deps import require_read
 from src.api.routes import history
 from src.services import history_service
 
 ACTOR = {"_id": ObjectId(), "role": "admin", "full_name": "Admin Actor"}
+ACTOR_LIDER = {"_id": ObjectId(), "role": "lider", "full_name": "Líder Actor"}
 
 
 def _actor_dependency(route_function):
@@ -24,8 +25,20 @@ def _ahora() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def test_history_route_requires_admin() -> None:
-    assert _actor_dependency(history.list_history_route) is require_admin
+def test_history_route_requires_read() -> None:
+    assert _actor_dependency(history.list_history_route) is require_read
+
+
+def test_list_history_route_allows_lider_role(use_test_db) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            entries = await history.list_history_route(
+                None, None, None, None, None, ACTOR_LIDER
+            )
+
+            assert isinstance(entries, list)
+
+    asyncio.run(scenario())
 
 
 def test_router_registers_history_routes() -> None:

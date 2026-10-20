@@ -8,10 +8,12 @@ directamente cada uno por su lado (plan.md sección 5, decisión 8).
 from datetime import datetime, timezone
 from typing import Any
 
+from src.api.deps import canonical_role
 from src.core.database import start_transaction
 from src.core.security import generate_temporary_password, hash_password
 from src.models.session import delete_sessions_by_user
-from src.models.user import find_user_by_email, update_user
+from src.models.user import find_user_by_email, list_users as list_user_documents, update_user
+from src.schemas.user import UserOut
 from src.services import history_service
 
 
@@ -92,3 +94,12 @@ async def reset_password(actor: dict[str, Any], email: str) -> dict[str, Any]:
         "temporary_password": temporary_password,
         "sessions_invalidated": sessions_invalidated,
     }
+
+
+async def list_users() -> list[UserOut]:
+    """Lista todas las cuentas con el rol ya canonicalizado (RF-9, RF-10)."""
+    documents = await list_user_documents()
+    return [
+        UserOut(**{**document, "role": canonical_role(document["role"])})
+        for document in documents
+    ]

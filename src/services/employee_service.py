@@ -13,7 +13,7 @@ texto libre de usuario (plan.md sección 4b).
 """
 
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, get_args
 
 from bson import ObjectId
 from bson.errors import InvalidId
@@ -29,10 +29,10 @@ from src.models.employee import (
     update_employee_fields,
     update_employee_status_fields,
 )
-from src.schemas.employee import EmployeeCreate, EmployeeOut, EmployeeUpdate
+from src.schemas.employee import EmployeeCreate, EmployeeOut, EmployeePosition, EmployeeUpdate
 from src.services import history_service
 
-CARGOS_VALIDOS = {"recursos_humanos", "lider"}
+CARGOS_VALIDOS = set(get_args(EmployeePosition))
 
 
 class InvalidPositionError(Exception):

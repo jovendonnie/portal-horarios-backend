@@ -93,6 +93,17 @@ def test_employee_create_builds_with_area_id_and_status_id() -> None:
     assert employee_create.status_id == "66f2000000000000000000ee"
 
 
+def test_employee_create_accepts_practicante_position() -> None:
+    employee_create = EmployeeCreate(
+        full_name="Ana Pérez",
+        position="practicante",
+        area_id="66f2000000000000000000dd",
+        status_id="66f2000000000000000000ee",
+    )
+
+    assert employee_create.position == "practicante"
+
+
 def test_employee_create_rejects_invalid_position() -> None:
     with pytest.raises(ValidationError):
         EmployeeCreate(
@@ -138,3 +149,9 @@ def test_employee_update_only_dumps_explicitly_set_fields() -> None:
 def test_employee_update_rejects_invalid_position() -> None:
     with pytest.raises(ValidationError):
         EmployeeUpdate(position="gerente")
+
+
+def test_employee_update_accepts_practicante_position() -> None:
+    employee_update = EmployeeUpdate(position="practicante")
+
+    assert employee_update.position == "practicante"

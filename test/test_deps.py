@@ -5,7 +5,14 @@ import pytest
 from fastapi import HTTPException
 
 from conftest import mongo_test_session
-from src.api.deps import get_current_user, get_session_token, require_admin, require_read
+from src.api.deps import (
+    canonical_role,
+    get_current_user,
+    get_session_token,
+    require_admin,
+    require_read,
+    require_schedule_write,
+)
 from src.models.user import insert_user
 from src.services import session_service
 
@@ -93,6 +100,20 @@ def test_require_admin_allows_admin_role(use_test_db) -> None:
     asyncio.run(scenario())
 
 
+def test_require_admin_allows_gestion_humana_role(use_test_db) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            gestion_humana = await _insert_and_fetch_user(
+                "gestion-humana-admin@hispacontact.com", role="gestion_humana"
+            )
+
+            result = await require_admin(user=gestion_humana)
+
+            assert result == gestion_humana
+
+    asyncio.run(scenario())
+
+
 def test_require_admin_rejects_non_admin_role(use_test_db) -> None:
     async def scenario() -> None:
         async with mongo_test_session():
@@ -151,6 +172,57 @@ def test_require_read_rejects_unknown_role(use_test_db) -> None:
 
             with pytest.raises(HTTPException) as exc_info:
                 await require_read(user=invitado)
+
+            assert exc_info.value.status_code == 403
+
+    asyncio.run(scenario())
+
+
+def test_canonical_role_maps_admin_to_gestion_humana() -> None:
+    assert canonical_role("admin") == "gestion_humana"
+
+
+def test_canonical_role_is_idempotent_for_gestion_humana() -> None:
+    assert canonical_role("gestion_humana") == "gestion_humana"
+
+
+def test_canonical_role_leaves_other_roles_unchanged() -> None:
+    assert canonical_role("lider") == "lider"
+
+
+def test_require_schedule_write_allows_admin_role(use_test_db) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            admin = await _insert_and_fetch_user("admin-horarios@hispacontact.com", role="admin")
+
+            result = await require_schedule_write(user=admin)
+
+            assert result == admin
+
+    asyncio.run(scenario())
+
+
+def test_require_schedule_write_allows_gestion_humana_role(use_test_db) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            gestion_humana = await _insert_and_fetch_user(
+                "gestion-humana-horarios@hispacontact.com", role="gestion_humana"
+            )
+
+            result = await require_schedule_write(user=gestion_humana)
+
+            assert result == gestion_humana
+
+    asyncio.run(scenario())
+
+
+def test_require_schedule_write_rejects_lider_role(use_test_db) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            lider = await _insert_and_fetch_user("lider-horarios@hispacontact.com", role="lider")
+
+            with pytest.raises(HTTPException) as exc_info:
+                await require_schedule_write(user=lider)
 
             assert exc_info.value.status_code == 403
 

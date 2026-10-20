@@ -4,7 +4,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from src.api.deps import require_admin
+from src.api.deps import require_read
 from src.schemas.history import EntityType, HistoryEntryOut, HistoryQuery
 from src.services.history_service import (
     EntityNotFoundError,
@@ -22,7 +22,7 @@ async def list_history_route(
     actor_id: str | None = None,
     date_from: datetime | None = None,
     date_to: datetime | None = None,
-    _actor: dict = Depends(require_admin),
+    _actor: dict = Depends(require_read),
 ) -> list[HistoryEntryOut]:
     filters = HistoryQuery(
         entity_type=entity_type,

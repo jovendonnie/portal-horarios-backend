@@ -22,9 +22,14 @@ async def get_current_user(token: str = Depends(get_session_token)) -> dict[str,
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Sesión inválida o expirada")
 
 
+def canonical_role(role: str) -> str:
+    """Normaliza el rol legacy `admin` al valor canónico `gestion_humana` (RF-9)."""
+    return "gestion_humana" if role == "admin" else role
+
+
 async def require_admin(user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
-    """Exige que el usuario autenticado tenga rol `admin`, o responde 403 (RF-3)."""
-    if user.get("role") != "admin":
+    """Exige Gestión Humana (`admin` o `gestion_humana`), o responde 403 (RF-9)."""
+    if canonical_role(user.get("role", "")) != "gestion_humana":
         raise HTTPException(status.HTTP_403_FORBIDDEN, "No autorizado")
     return user
 
@@ -32,5 +37,12 @@ async def require_admin(user: dict[str, Any] = Depends(get_current_user)) -> dic
 async def require_read(user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
     """Exige un rol autenticado con acceso de lectura (admin, gestion_humana o lider), o responde 403."""
     if user.get("role") not in {"admin", "gestion_humana", "lider"}:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "No autorizado")
+    return user
+
+
+async def require_schedule_write(user: dict[str, Any] = Depends(get_current_user)) -> dict[str, Any]:
+    """Exige Gestión Humana (`admin` o `gestion_humana`) para mutar Horarios, o responde 403 (RF-7)."""
+    if canonical_role(user.get("role", "")) != "gestion_humana":
         raise HTTPException(status.HTTP_403_FORBIDDEN, "No autorizado")
     return user
