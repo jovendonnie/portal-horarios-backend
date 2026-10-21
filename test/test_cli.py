@@ -1,6 +1,6 @@
 import asyncio
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 import pytest
@@ -87,6 +87,14 @@ def test_help_lists_all_subcommands() -> None:
     assert "set-employee-status" in help_text
     assert "list-history" in help_text
     assert "seed-predefined-statuses" in help_text
+    assert "ensure-indexes" in help_text
+    assert "show-default-schedule" in help_text
+    assert "set-default-schedule" in help_text
+    assert "show-week-schedule" in help_text
+    assert "set-day-status" in help_text
+    assert "revert-day-status" in help_text
+    assert "set-range-status" in help_text
+    assert "list-users" in help_text
     for commands in CATALOG_COMMANDS:
         assert commands["create"] in help_text
         assert commands["list"] in help_text
@@ -1283,5 +1291,384 @@ def test_list_history_filters_without_matches_returns_ok_and_empty_list(use_test
             payload = json.loads(capsys.readouterr().out)
             assert payload["status"] == "ok"
             assert payload["entries"] == []
+
+    asyncio.run(scenario())
+
+
+# --- Fase 10: ensure-indexes, horarios, list-users (T046-T051) ---
+
+
+def _next_monday() -> date:
+    today = date.today()
+    days_ahead = (7 - today.weekday()) % 7
+    return today + timedelta(days=days_ahead)
+
+
+async def _seed_employee(capsys, area: str = "Ventas", status: str = "Presencial") -> str:
+    await ensure_employee_indexes()
+    await _seed_catalog_entry("areas", area)
+    await _seed_catalog_entry("estados", status)
+
+    await cli.run(
+        [
+            "create-employee",
+            "--name",
+            "Carla Gómez",
+            "--position",
+            "lider",
+            "--area",
+            area,
+            "--status",
+            status,
+        ]
+    )
+    created = json.loads(capsys.readouterr().out)["employee"]
+    return created["id"]
+
+
+def test_ensure_indexes_returns_created_collections(use_test_db, capsys) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            exit_code = await cli.run(["ensure-indexes"])
+
+            assert exit_code == 0
+            payload = json.loads(capsys.readouterr().out)
+            assert payload["status"] == "ok"
+            assert set(payload["created"]) == {
+                "users",
+                "employees",
+                "areas",
+                "estados",
+                "history_entries",
+                "schedules",
+            }
+            assert payload["skipped_duplicates"] == []
+
+    asyncio.run(scenario())
+
+
+def test_show_default_schedule_returns_empty_template_when_not_configured(use_test_db, capsys) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            employee_id = await _seed_employee(capsys)
+
+            exit_code = await cli.run(["show-default-schedule", "--employee-id", employee_id])
+
+            assert exit_code == 0
+            payload = json.loads(capsys.readouterr().out)
+            assert payload["employee_id"] == employee_id
+            assert len(payload["days"]) == 5
+            assert all(day["works"] is False for day in payload["days"])
+            assert payload["updated_at"] is None
+            assert payload["updated_by"] is None
+
+    asyncio.run(scenario())
+
+
+def test_show_default_schedule_employee_not_found_returns_not_found_exit_code(
+    use_test_db, capsys
+) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            exit_code = await cli.run(
+                ["show-default-schedule", "--employee-id", str(ObjectId())]
+            )
+
+            assert exit_code == 3
+            payload = json.loads(capsys.readouterr().err)
+            assert payload["status"] == "error"
+            assert payload["code"] == "employee_not_found"
+
+    asyncio.run(scenario())
+
+
+def test_set_default_schedule_success_returns_updated_days(use_test_db, capsys) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            employee_id = await _seed_employee(capsys)
+            days_json = json.dumps(
+                [
+                    {
+                        "weekday": "monday",
+                        "works": True,
+                        "modality": "presencial",
+                        "time_ranges": [{"start": "08:00", "end": "17:00"}],
+                    },
+                    {"weekday": "tuesday", "works": False, "modality": None, "time_ranges": []},
+                    {"weekday": "wednesday", "works": False, "modality": None, "time_ranges": []},
+                    {"weekday": "thursday", "works": False, "modality": None, "time_ranges": []},
+                    {"weekday": "friday", "works": False, "modality": None, "time_ranges": []},
+                ]
+            )
+
+            exit_code = await cli.run(
+                ["set-default-schedule", "--employee-id", employee_id, "--days-json", days_json]
+            )
+
+            assert exit_code == 0
+            payload = json.loads(capsys.readouterr().out)
+            monday = next(day for day in payload["days"] if day["weekday"] == "monday")
+            assert monday["works"] is True
+            assert monday["modality"] == "presencial"
+            assert monday["time_ranges"] == [{"start": "08:00", "end": "17:00"}]
+
+    asyncio.run(scenario())
+
+
+def test_set_default_schedule_with_malformed_json_returns_invalid_days_exit_code(
+    use_test_db, capsys
+) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            employee_id = await _seed_employee(capsys)
+
+            exit_code = await cli.run(
+                [
+                    "set-default-schedule",
+                    "--employee-id",
+                    employee_id,
+                    "--days-json",
+                    "no-es-json",
+                ]
+            )
+
+            assert exit_code == 4
+            payload = json.loads(capsys.readouterr().err)
+            assert payload["status"] == "error"
+            assert payload["code"] == "invalid_days"
+
+    asyncio.run(scenario())
+
+
+def test_set_default_schedule_with_incomplete_days_returns_invalid_days_exit_code(
+    use_test_db, capsys
+) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            employee_id = await _seed_employee(capsys)
+            days_json = json.dumps(
+                [{"weekday": "monday", "works": False, "modality": None, "time_ranges": []}]
+            )
+
+            exit_code = await cli.run(
+                ["set-default-schedule", "--employee-id", employee_id, "--days-json", days_json]
+            )
+
+            assert exit_code == 4
+            payload = json.loads(capsys.readouterr().err)
+            assert payload["status"] == "error"
+            assert payload["code"] == "invalid_days"
+
+    asyncio.run(scenario())
+
+
+def test_show_week_schedule_returns_week_schedule_response(use_test_db, capsys) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await _seed_employee(capsys)
+
+            exit_code = await cli.run(["show-week-schedule"])
+
+            assert exit_code == 0
+            payload = json.loads(capsys.readouterr().out)
+            assert payload["week_offset"] == 0
+            assert "week_start" in payload
+            assert "week_end" in payload
+            assert "server_today" in payload
+            assert len(payload["employees"]) == 1
+            assert payload["employees"][0]["full_name"] == "Carla Gómez"
+            assert len(payload["employees"][0]["days"]) == 5
+
+    asyncio.run(scenario())
+
+
+def test_set_day_status_success_returns_day_entry(use_test_db, capsys) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            employee_id = await _seed_employee(capsys)
+            await _seed_catalog_entry("estados", "Vacaciones")
+            monday = _next_monday().isoformat()
+
+            exit_code = await cli.run(
+                [
+                    "set-day-status",
+                    "--employee-id",
+                    employee_id,
+                    "--date",
+                    monday,
+                    "--status",
+                    "Vacaciones",
+                    "--observation",
+                    "Cita médica",
+                ]
+            )
+
+            assert exit_code == 0
+            payload = json.loads(capsys.readouterr().out)
+            assert payload["employee_id"] == employee_id
+            assert payload["date"] == monday
+            assert payload["status_name"] == "Vacaciones"
+            assert payload["source"] == "day_override"
+            assert payload["observation"] == "Cita médica"
+
+    asyncio.run(scenario())
+
+
+def test_set_day_status_stale_update_returns_conflict_exit_code(use_test_db, capsys) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            employee_id = await _seed_employee(capsys)
+            await _seed_catalog_entry("estados", "Vacaciones")
+            monday = _next_monday().isoformat()
+
+            first = await cli.run(
+                [
+                    "set-day-status",
+                    "--employee-id",
+                    employee_id,
+                    "--date",
+                    monday,
+                    "--status",
+                    "Vacaciones",
+                ]
+            )
+            assert first == 0
+            capsys.readouterr()
+
+            second = await cli.run(
+                [
+                    "set-day-status",
+                    "--employee-id",
+                    employee_id,
+                    "--date",
+                    monday,
+                    "--status",
+                    "Vacaciones",
+                ]
+            )
+
+            assert second == 2
+            payload = json.loads(capsys.readouterr().err)
+            assert payload["status"] == "error"
+            assert payload["code"] == "stale_update"
+
+    asyncio.run(scenario())
+
+
+def test_revert_day_status_without_existing_exception_is_noop(use_test_db, capsys) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            employee_id = await _seed_employee(capsys)
+            monday = _next_monday().isoformat()
+
+            exit_code = await cli.run(
+                ["revert-day-status", "--employee-id", employee_id, "--date", monday]
+            )
+
+            assert exit_code == 0
+            payload = json.loads(capsys.readouterr().out)
+            assert payload["employee_id"] == employee_id
+            assert payload["date"] == monday
+            assert payload["source"] == "default"
+
+    asyncio.run(scenario())
+
+
+def test_set_range_status_success_returns_days(use_test_db, capsys) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            employee_id = await _seed_employee(capsys)
+            await _seed_catalog_entry("estados", "Vacaciones")
+            monday = _next_monday()
+            tuesday = monday + timedelta(days=1)
+
+            exit_code = await cli.run(
+                [
+                    "set-range-status",
+                    "--employee-id",
+                    employee_id,
+                    "--start-date",
+                    monday.isoformat(),
+                    "--end-date",
+                    tuesday.isoformat(),
+                    "--status",
+                    "Vacaciones",
+                ]
+            )
+
+            assert exit_code == 0
+            payload = json.loads(capsys.readouterr().out)
+            assert len(payload["days"]) == 2
+            assert {day["date"] for day in payload["days"]} == {
+                monday.isoformat(),
+                tuesday.isoformat(),
+            }
+            assert all(day["source"] == "range_override" for day in payload["days"])
+
+    asyncio.run(scenario())
+
+
+def test_set_range_status_conflict_returns_overlapping_dates(use_test_db, capsys) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            employee_id = await _seed_employee(capsys)
+            await _seed_catalog_entry("estados", "Vacaciones")
+            monday = _next_monday()
+            tuesday = monday + timedelta(days=1)
+            wednesday = monday + timedelta(days=2)
+
+            await cli.run(
+                [
+                    "set-day-status",
+                    "--employee-id",
+                    employee_id,
+                    "--date",
+                    tuesday.isoformat(),
+                    "--status",
+                    "Vacaciones",
+                ]
+            )
+            capsys.readouterr()
+
+            exit_code = await cli.run(
+                [
+                    "set-range-status",
+                    "--employee-id",
+                    employee_id,
+                    "--start-date",
+                    monday.isoformat(),
+                    "--end-date",
+                    wednesday.isoformat(),
+                    "--status",
+                    "Vacaciones",
+                ]
+            )
+
+            assert exit_code == 2
+            payload = json.loads(capsys.readouterr().err)
+            assert payload["status"] == "error"
+            assert payload["code"] == "range_conflict"
+            assert payload["overlapping_dates"] == [tuesday.isoformat()]
+
+    asyncio.run(scenario())
+
+
+def test_list_users_excludes_password_hash_and_canonicalizes_role(use_test_db, capsys) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await ensure_indexes()
+            await insert_user(_make_user("admin-legacy@hispacontact.com", role="admin"))
+            await insert_user(_make_user("lider@hispacontact.com", role="lider"))
+
+            exit_code = await cli.run(["list-users"])
+
+            assert exit_code == 0
+            payload = json.loads(capsys.readouterr().out)
+            assert len(payload["users"]) == 2
+            for user in payload["users"]:
+                assert "password_hash" not in user
+            roles = {user["email"]: user["role"] for user in payload["users"]}
+            assert roles["admin-legacy@hispacontact.com"] == "gestion_humana"
+            assert roles["lider@hispacontact.com"] == "lider"
 
     asyncio.run(scenario())

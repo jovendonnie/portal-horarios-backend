@@ -63,6 +63,29 @@ def test_ensure_indexes_rejects_duplicate_name_even_if_disabled(
 
 
 @pytest.mark.parametrize("collection_name", COLLECTIONS)
+def test_list_entries_never_returns_duplicate_ids_with_index_active(
+    use_test_db, collection_name
+) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await ensure_indexes(collection_name)
+            actor_id = ObjectId()
+            ahora = _ahora()
+
+            await insert_entry(collection_name, "Ventas", actor_id, ahora)
+
+            with pytest.raises(DuplicateKeyError):
+                await insert_entry(collection_name, "  VENTAS  ", actor_id, ahora)
+
+            entries = await list_entries(collection_name)
+
+            assert len(entries) == 1
+            assert len({entry["_id"] for entry in entries}) == len(entries)
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("collection_name", COLLECTIONS)
 def test_insert_entry_sets_default_is_enabled_and_created_at(
     use_test_db, collection_name
 ) -> None:

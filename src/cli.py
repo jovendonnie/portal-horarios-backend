@@ -9,20 +9,22 @@ import asyncio
 import json
 import re
 import sys
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any
 
 from bson import ObjectId
 from bson.errors import InvalidId
+from pydantic import ValidationError
 
-from src.core.database import close_mongo_connection, connect_to_mongo
+from src.core.database import arrancar_con_indices, close_mongo_connection, connect_to_mongo
 from src.models.catalog import find_entry_by_name
 from src.models.user import find_user_by_email, update_user
 from src.schemas.employee import EmployeeCreate, EmployeeOut, EmployeeUpdate
 from src.schemas.history import HistoryQuery
+from src.schemas.schedule import DefaultScheduleUpdate
 from src.schemas.user import UserCreate
 from src.services.auth_service import EmailAlreadyExistsError, register_user
-from src.services import catalog_service, history_service, user_service
+from src.services import catalog_service, history_service, schedule_service, user_service
 from src.services.employee_service import (
     DuplicateEmployeeError,
     EmployeeNotFoundError,
@@ -47,6 +49,10 @@ _ENTITY_CODE = {"Área": "area", "Estado": "status"}
 
 
 class _InvalidArgumentsError(Exception):
+    pass
+
+
+class _InvalidDaysError(Exception):
     pass
 
 
@@ -179,6 +185,56 @@ def _build_parser() -> _ArgumentParser:
     list_history_parser.add_argument("--actor-id", dest="actor_id")
     list_history_parser.add_argument("--from", dest="date_from")
     list_history_parser.add_argument("--to", dest="date_to")
+
+    subparsers.add_parser(
+        "ensure-indexes", help="Reintenta crear los índices únicos pendientes"
+    )
+
+    show_default_schedule_parser = subparsers.add_parser(
+        "show-default-schedule", help="Muestra el horario habitual de un empleado"
+    )
+    show_default_schedule_parser.add_argument("--employee-id", required=True, dest="employee_id")
+
+    set_default_schedule_parser = subparsers.add_parser(
+        "set-default-schedule", help="Reemplaza el horario habitual de un empleado"
+    )
+    set_default_schedule_parser.add_argument("--employee-id", required=True, dest="employee_id")
+    set_default_schedule_parser.add_argument("--days-json", required=True, dest="days_json")
+
+    show_week_schedule_parser = subparsers.add_parser(
+        "show-week-schedule", help="Consulta el horario semanal de todos los empleados"
+    )
+    show_week_schedule_parser.add_argument("--offset", type=int, default=0)
+
+    set_day_status_parser = subparsers.add_parser(
+        "set-day-status", help="Aplica una excepción puntual a un día de un empleado"
+    )
+    set_day_status_parser.add_argument("--employee-id", required=True, dest="employee_id")
+    set_day_status_parser.add_argument("--date", required=True)
+    set_day_status_parser.add_argument("--status", required=True)
+    set_day_status_parser.add_argument(
+        "--expected-updated-at", dest="expected_updated_at", default=None
+    )
+    set_day_status_parser.add_argument("--observation", default=None)
+
+    revert_day_status_parser = subparsers.add_parser(
+        "revert-day-status", help="Revierte la excepción puntual de un día de un empleado"
+    )
+    revert_day_status_parser.add_argument("--employee-id", required=True, dest="employee_id")
+    revert_day_status_parser.add_argument("--date", required=True)
+    revert_day_status_parser.add_argument(
+        "--expected-updated-at", dest="expected_updated_at", default=None
+    )
+
+    set_range_status_parser = subparsers.add_parser(
+        "set-range-status", help="Aplica un Estado a un rango de fechas de un empleado"
+    )
+    set_range_status_parser.add_argument("--employee-id", required=True, dest="employee_id")
+    set_range_status_parser.add_argument("--start-date", required=True, dest="start_date")
+    set_range_status_parser.add_argument("--end-date", required=True, dest="end_date")
+    set_range_status_parser.add_argument("--status", required=True)
+
+    subparsers.add_parser("list-users", help="Lista las cuentas de usuario")
 
     return parser
 
@@ -425,6 +481,172 @@ async def _list_history(
     return {"entries": [_history_entry_payload(entry) for entry in entries]}
 
 
+def _parse_employee_object_id(employee_id: str) -> ObjectId:
+    try:
+        return ObjectId(employee_id)
+    except InvalidId as exc:
+        raise EmployeeNotFoundError() from exc
+
+
+def _parse_date_arg(value: str, flag: str) -> date:
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        raise _InvalidArgumentsError(f"Fecha con formato inválido en {flag}: {value}") from exc
+
+
+def _time_ranges_payload(time_ranges: list[Any]) -> list[dict[str, Any]]:
+    return [{"start": time_range.start, "end": time_range.end} for time_range in time_ranges]
+
+
+def _default_schedule_payload(schedule: Any) -> dict[str, Any]:
+    return {
+        "employee_id": schedule.employee_id,
+        "days": [
+            {
+                "weekday": day.weekday,
+                "works": day.works,
+                "modality": day.modality,
+                "time_ranges": _time_ranges_payload(day.time_ranges),
+            }
+            for day in schedule.days
+        ],
+        "updated_at": schedule.updated_at.isoformat() if schedule.updated_at is not None else None,
+        "updated_by": schedule.updated_by,
+    }
+
+
+def _schedule_day_entry_payload(employee_id: str, entry: Any) -> dict[str, Any]:
+    return {
+        "employee_id": employee_id,
+        "date": entry.date.isoformat(),
+        "status_id": entry.status_id,
+        "status_name": entry.status_name,
+        "modality": entry.modality,
+        "time_ranges": _time_ranges_payload(entry.time_ranges),
+        "observation": entry.observation,
+        "updated_at": entry.updated_at.isoformat() if entry.updated_at is not None else None,
+        "source": entry.source,
+    }
+
+
+def _week_schedule_payload(response: Any) -> dict[str, Any]:
+    return {
+        "week_start": response.week_start.isoformat(),
+        "week_end": response.week_end.isoformat(),
+        "server_today": response.server_today.isoformat(),
+        "week_offset": response.week_offset,
+        "can_navigate_prev": response.can_navigate_prev,
+        "can_navigate_next": response.can_navigate_next,
+        "employees": [
+            {
+                "employee_id": employee.employee_id,
+                "full_name": employee.full_name,
+                "position": employee.position,
+                "area_name": employee.area_name,
+                "is_active": employee.is_active,
+                "days": [
+                    _schedule_day_entry_payload(employee.employee_id, day)
+                    for day in employee.days
+                ],
+            }
+            for employee in response.employees
+        ],
+    }
+
+
+def _user_payload(user: Any) -> dict[str, Any]:
+    return {
+        "id": user.id,
+        "full_name": user.full_name,
+        "email": user.email,
+        "role": user.role,
+        "is_active": user.is_active,
+        "created_at": user.created_at.isoformat(),
+        "created_by": user.created_by,
+    }
+
+
+async def _ensure_indexes() -> dict[str, Any]:
+    created, skipped_duplicates = await arrancar_con_indices()
+    return {"created": created, "skipped_duplicates": skipped_duplicates}
+
+
+async def _show_default_schedule(employee_id: str) -> dict[str, Any]:
+    object_id = _parse_employee_object_id(employee_id)
+    schedule = await schedule_service.get_default_schedule(object_id)
+    return _default_schedule_payload(schedule)
+
+
+async def _set_default_schedule(employee_id: str, days_json: str) -> dict[str, Any]:
+    object_id = _parse_employee_object_id(employee_id)
+    try:
+        raw_days = json.loads(days_json)
+        update = DefaultScheduleUpdate(days=raw_days)
+    except (json.JSONDecodeError, ValidationError) as exc:
+        raise _InvalidDaysError(f"--days-json inválido: {exc}") from exc
+
+    schedule = await schedule_service.set_default_schedule(
+        object_id, update.days, {"_id": None, "full_name": "CLI"}
+    )
+    return _default_schedule_payload(schedule)
+
+
+async def _show_week_schedule(offset: int) -> dict[str, Any]:
+    response = await schedule_service.get_week_schedule_view(offset)
+    return _week_schedule_payload(response)
+
+
+async def _set_day_status(
+    employee_id: str,
+    day_str: str,
+    status: str,
+    expected_updated_at: str | None,
+    observation: str | None,
+) -> dict[str, Any]:
+    object_id = _parse_employee_object_id(employee_id)
+    day = _parse_date_arg(day_str, "--date")
+    status_id = await _resolve_catalog_id("estados", status, InvalidStatusError)
+    expected = _parse_history_date(expected_updated_at, "--expected-updated-at")
+
+    entry = await schedule_service.apply_day_exception(
+        object_id, day, status_id, observation, expected, {"_id": None, "full_name": "CLI"}
+    )
+    return _schedule_day_entry_payload(employee_id, entry)
+
+
+async def _revert_day_status(
+    employee_id: str, day_str: str, expected_updated_at: str | None
+) -> dict[str, Any]:
+    object_id = _parse_employee_object_id(employee_id)
+    day = _parse_date_arg(day_str, "--date")
+    expected = _parse_history_date(expected_updated_at, "--expected-updated-at")
+
+    entry = await schedule_service.revert_day_exception(
+        object_id, day, expected, {"_id": None, "full_name": "CLI"}
+    )
+    return _schedule_day_entry_payload(employee_id, entry)
+
+
+async def _set_range_status(
+    employee_id: str, start_date_str: str, end_date_str: str, status: str
+) -> dict[str, Any]:
+    object_id = _parse_employee_object_id(employee_id)
+    start_date = _parse_date_arg(start_date_str, "--start-date")
+    end_date = _parse_date_arg(end_date_str, "--end-date")
+    status_id = await _resolve_catalog_id("estados", status, InvalidStatusError)
+
+    entries = await schedule_service.apply_range_status(
+        object_id, start_date, end_date, status_id, {"_id": None, "full_name": "CLI"}
+    )
+    return {"days": [_schedule_day_entry_payload(employee_id, entry) for entry in entries]}
+
+
+async def _list_users() -> dict[str, Any]:
+    users = await user_service.list_users()
+    return {"users": [_user_payload(user) for user in users]}
+
+
 def _enabled_filter(args: argparse.Namespace) -> bool | None:
     if getattr(args, "enabled_flag", False):
         return True
@@ -474,9 +696,29 @@ async def _dispatch(args: argparse.Namespace) -> dict[str, Any]:
         return await _set_catalog_enabled("estados", "Estado", args.id, True)
     if args.command == "disable-status":
         return await _set_catalog_enabled("estados", "Estado", args.id, False)
-    return await _list_history(
-        args.entity_type, args.entity_id, args.actor_id, args.date_from, args.date_to
-    )
+    if args.command == "list-history":
+        return await _list_history(
+            args.entity_type, args.entity_id, args.actor_id, args.date_from, args.date_to
+        )
+    if args.command == "ensure-indexes":
+        return await _ensure_indexes()
+    if args.command == "show-default-schedule":
+        return await _show_default_schedule(args.employee_id)
+    if args.command == "set-default-schedule":
+        return await _set_default_schedule(args.employee_id, args.days_json)
+    if args.command == "show-week-schedule":
+        return await _show_week_schedule(args.offset)
+    if args.command == "set-day-status":
+        return await _set_day_status(
+            args.employee_id, args.date, args.status, args.expected_updated_at, args.observation
+        )
+    if args.command == "revert-day-status":
+        return await _revert_day_status(args.employee_id, args.date, args.expected_updated_at)
+    if args.command == "set-range-status":
+        return await _set_range_status(
+            args.employee_id, args.start_date, args.end_date, args.status
+        )
+    return await _list_users()
 
 
 async def _execute(args: argparse.Namespace) -> int:
@@ -523,6 +765,30 @@ async def _execute(args: argparse.Namespace) -> int:
         return EXIT_NOT_FOUND
     except history_service.EntityTypeRequiredError:
         _print_error("invalid_arguments", "entity-id requiere especificar entity-type")
+        return EXIT_INVALID_ARGS
+    except _InvalidDaysError as exc:
+        _print_error("invalid_days", str(exc))
+        return EXIT_INVALID_ARGS
+    except schedule_service.RangeConflictError as exc:
+        error = {
+            "status": "error",
+            "code": "range_conflict",
+            "message": str(exc),
+            "overlapping_dates": exc.dates,
+        }
+        print(json.dumps(error, ensure_ascii=False), file=sys.stderr)
+        return EXIT_CONFLICT
+    except schedule_service.DayConflictError as exc:
+        _print_error("range_conflict", str(exc))
+        return EXIT_CONFLICT
+    except schedule_service.StaleScheduleUpdateError as exc:
+        _print_error("stale_update", str(exc))
+        return EXIT_CONFLICT
+    except schedule_service.NonBusinessDayError as exc:
+        _print_error("non_business_day", str(exc))
+        return EXIT_INVALID_ARGS
+    except schedule_service.InvalidRangeError as exc:
+        _print_error("invalid_range", str(exc))
         return EXIT_INVALID_ARGS
     except Exception as exc:  # infraestructura/imprevisto
         _print_error("unexpected_error", str(exc))
