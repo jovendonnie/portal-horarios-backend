@@ -96,6 +96,16 @@ async def count_enabled(collection_name: str) -> int:
     return await db[collection_name].count_documents({"is_enabled": True})
 
 
+async def delete_entry(
+    collection_name: str,
+    entry_id: Any,
+    session: AsyncIOMotorClientSession | None = None,
+) -> bool:
+    db = get_database()
+    result = await db[collection_name].delete_one({"_id": entry_id}, session=session)
+    return result.deleted_count > 0
+
+
 async def set_entry_enabled(
     collection_name: str,
     entry_id: Any,

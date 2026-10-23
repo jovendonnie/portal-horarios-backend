@@ -83,6 +83,35 @@ async def count_employees_by_status(estado_id: Any) -> int:
     return await db[COLLECTION_NAME].count_documents({"estado_id": estado_id})
 
 
+async def reassign_area(
+    old_area_id: Any,
+    new_area_id: Any,
+    new_area_name: str,
+    session: AsyncIOMotorClientSession | None = None,
+) -> int:
+    db = get_database()
+    result = await db[COLLECTION_NAME].update_many(
+        {"area_id": old_area_id},
+        {"$set": {"area_id": new_area_id, "area": new_area_name}},
+        session=session,
+    )
+    return result.modified_count
+
+
+async def reassign_status(
+    old_estado_id: Any,
+    new_estado_id: Any,
+    session: AsyncIOMotorClientSession | None = None,
+) -> int:
+    db = get_database()
+    result = await db[COLLECTION_NAME].update_many(
+        {"estado_id": old_estado_id},
+        {"$set": {"estado_id": new_estado_id}},
+        session=session,
+    )
+    return result.modified_count
+
+
 async def update_employee_status_fields(
     employee_id: Any,
     estado_id: Any,

@@ -2,6 +2,8 @@ from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from typing import Any
 
+from pymongo.errors import DuplicateKeyError
+
 from src.core.database import start_transaction
 from src.models import catalog
 from src.services import history_service
@@ -76,6 +78,9 @@ async def create_entry(
                 session, _ENTITY_TYPES[collection_name], entry_id, "create", [], actor, ahora
             )
             await session.commit_transaction()
+        except DuplicateKeyError as exc:
+            await session.abort_transaction()
+            raise DuplicateEntryError(entity_label) from exc
         except Exception:
             await session.abort_transaction()
             raise
@@ -158,6 +163,9 @@ async def rename_entry(
                 session, _ENTITY_TYPES[collection_name], entry_id, "update", diffs, actor, ahora
             )
             await session.commit_transaction()
+        except DuplicateKeyError as exc:
+            await session.abort_transaction()
+            raise DuplicateEntryError(entity_label) from exc
         except Exception:
             await session.abort_transaction()
             raise

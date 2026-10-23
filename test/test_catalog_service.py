@@ -2,8 +2,10 @@ import asyncio
 
 import pytest
 from bson import ObjectId
+from pymongo.errors import DuplicateKeyError
 
 from conftest import mongo_test_session
+from src.models import catalog as catalog_model
 from src.models.catalog import ensure_indexes
 from src.models.history import list_entries as list_history_entries
 from src.services import catalog_service
@@ -150,6 +152,29 @@ def test_create_entry_rejects_duplicate_against_disabled_entry(
 
 
 @pytest.mark.parametrize("collection_name,entity_label", CATALOGS)
+def test_create_entry_raises_duplicate_entry_error_on_race_condition(
+    use_test_db, monkeypatch, collection_name, entity_label
+) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await ensure_indexes(collection_name)
+
+            async def _raise_duplicate_key(*args, **kwargs):
+                raise DuplicateKeyError("E11000 duplicate key error")
+
+            monkeypatch.setattr(catalog_model, "insert_entry", _raise_duplicate_key)
+
+            with pytest.raises(catalog_service.DuplicateEntryError):
+                await catalog_service.create_entry(
+                    collection_name, entity_label, "Ventas", ACTOR
+                )
+
+            assert await catalog_model.find_entry_by_name(collection_name, "Ventas") is None
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("collection_name,entity_label", CATALOGS)
 def test_list_entries_filters_by_enabled(use_test_db, collection_name, entity_label) -> None:
     async def scenario() -> None:
         async with mongo_test_session():
@@ -228,6 +253,33 @@ def test_rename_entry_rejects_name_used_by_another_entry(
                 await catalog_service.rename_entry(
                     collection_name, entity_label, other_entry["_id"], "Ventas", ACTOR
                 )
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("collection_name,entity_label", CATALOGS)
+def test_rename_entry_raises_duplicate_entry_error_on_race_condition(
+    use_test_db, monkeypatch, collection_name, entity_label
+) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await ensure_indexes(collection_name)
+            entry = await catalog_service.create_entry(
+                collection_name, entity_label, "Ventas", ACTOR
+            )
+
+            async def _raise_duplicate_key(*args, **kwargs):
+                raise DuplicateKeyError("E11000 duplicate key error")
+
+            monkeypatch.setattr(catalog_model, "update_entry_name", _raise_duplicate_key)
+
+            with pytest.raises(catalog_service.DuplicateEntryError):
+                await catalog_service.rename_entry(
+                    collection_name, entity_label, entry["_id"], "Comercial", ACTOR
+                )
+
+            unchanged = await catalog_model.find_entry_by_id(collection_name, entry["_id"])
+            assert unchanged["name"] == "Ventas"
 
     asyncio.run(scenario())
 

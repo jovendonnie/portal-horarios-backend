@@ -14,6 +14,8 @@ from src.models.employee import (
     find_employee_by_identity,
     insert_employee,
     list_employees,
+    reassign_area,
+    reassign_status,
     update_employee_fields,
     update_employee_status_fields,
 )
@@ -221,6 +223,95 @@ def test_count_employees_by_status_counts_only_matching_estado_id(use_test_db) -
             assert await count_employees_by_status(estado_a) == 2
             assert await count_employees_by_status(estado_b) == 1
             assert await count_employees_by_status(ObjectId()) == 0
+
+    asyncio.run(scenario())
+
+
+def test_reassign_area_updates_area_id_and_denormalized_area_only_for_matching_employees(
+    use_test_db,
+) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            old_area_id = ObjectId()
+            new_area_id = ObjectId()
+            other_area_id = ObjectId()
+
+            uno_id = await insert_employee(
+                {**_make_employee("Uno"), "area_id": old_area_id}
+            )
+            dos_id = await insert_employee(
+                {**_make_employee("Dos", area="Soporte"), "area_id": old_area_id}
+            )
+            tres_id = await insert_employee(
+                {**_make_employee("Tres", area="Marketing"), "area_id": other_area_id}
+            )
+
+            modified = await reassign_area(old_area_id, new_area_id, "Comercial")
+
+            uno = await find_employee_by_id(uno_id)
+            dos = await find_employee_by_id(dos_id)
+            tres = await find_employee_by_id(tres_id)
+
+            assert modified == 2
+            assert uno["area_id"] == new_area_id
+            assert uno["area"] == "Comercial"
+            assert dos["area_id"] == new_area_id
+            assert dos["area"] == "Comercial"
+            assert tres["area_id"] == other_area_id
+            assert tres["area"] == "Marketing"
+
+    asyncio.run(scenario())
+
+
+def test_reassign_area_returns_zero_when_no_employee_matches(use_test_db) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            modified = await reassign_area(ObjectId(), ObjectId(), "Comercial")
+
+            assert modified == 0
+
+    asyncio.run(scenario())
+
+
+def test_reassign_status_updates_estado_id_without_touching_area(use_test_db) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            old_estado_id = ObjectId()
+            new_estado_id = ObjectId()
+            other_estado_id = ObjectId()
+
+            uno_id = await insert_employee(
+                {**_make_employee("Uno"), "estado_id": old_estado_id}
+            )
+            dos_id = await insert_employee(
+                {**_make_employee("Dos", area="Soporte"), "estado_id": old_estado_id}
+            )
+            tres_id = await insert_employee(
+                {**_make_employee("Tres", area="Marketing"), "estado_id": other_estado_id}
+            )
+
+            modified = await reassign_status(old_estado_id, new_estado_id)
+
+            uno = await find_employee_by_id(uno_id)
+            dos = await find_employee_by_id(dos_id)
+            tres = await find_employee_by_id(tres_id)
+
+            assert modified == 2
+            assert uno["estado_id"] == new_estado_id
+            assert uno["area"] == "Ventas"
+            assert dos["estado_id"] == new_estado_id
+            assert dos["area"] == "Soporte"
+            assert tres["estado_id"] == other_estado_id
+
+    asyncio.run(scenario())
+
+
+def test_reassign_status_returns_zero_when_no_employee_matches(use_test_db) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            modified = await reassign_status(ObjectId(), ObjectId())
+
+            assert modified == 0
 
     asyncio.run(scenario())
 

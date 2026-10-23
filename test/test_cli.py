@@ -95,6 +95,8 @@ def test_help_lists_all_subcommands() -> None:
     assert "revert-day-status" in help_text
     assert "set-range-status" in help_text
     assert "list-users" in help_text
+    assert "diagnose-catalog-duplicates" in help_text
+    assert "clean-catalog-duplicates" in help_text
     for commands in CATALOG_COMMANDS:
         assert commands["create"] in help_text
         assert commands["list"] in help_text
@@ -1670,5 +1672,101 @@ def test_list_users_excludes_password_hash_and_canonicalizes_role(use_test_db, c
             roles = {user["email"]: user["role"] for user in payload["users"]}
             assert roles["admin-legacy@hispacontact.com"] == "gestion_humana"
             assert roles["lider@hispacontact.com"] == "lider"
+
+    asyncio.run(scenario())
+
+
+def test_diagnose_catalog_duplicates_reports_duplicate_group(use_test_db, capsys) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await _seed_catalog_entry("areas", "Ventas")
+            await _seed_catalog_entry("areas", " ventas ")
+
+            exit_code = await cli.run(["diagnose-catalog-duplicates", "--collection", "areas"])
+
+            assert exit_code == 0
+            payload = json.loads(capsys.readouterr().out)
+            assert payload["status"] == "ok"
+            assert payload["collection"] == "areas"
+            assert payload["total_duplicate_groups"] == 1
+            group = payload["duplicate_groups"][0]
+            assert group["normalized_name"] == "ventas"
+            assert len(group["entries"]) == 2
+            assert group["keep_id"] in {entry["id"] for entry in group["entries"]}
+
+    asyncio.run(scenario())
+
+
+def test_diagnose_catalog_duplicates_returns_empty_list_without_duplicates(use_test_db, capsys) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await _seed_catalog_entry("areas", "Ventas")
+
+            exit_code = await cli.run(["diagnose-catalog-duplicates", "--collection", "areas"])
+
+            assert exit_code == 0
+            payload = json.loads(capsys.readouterr().out)
+            assert payload["duplicate_groups"] == []
+            assert payload["total_duplicate_groups"] == 0
+
+    asyncio.run(scenario())
+
+
+def test_clean_catalog_duplicates_without_confirm_requires_confirmation_and_changes_nothing(
+    use_test_db, capsys
+) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await _seed_catalog_entry("areas", "Ventas")
+            duplicate_id = await _seed_catalog_entry("areas", " ventas ")
+
+            exit_code = await cli.run(["clean-catalog-duplicates", "--collection", "areas"])
+
+            assert exit_code == 4
+            payload = json.loads(capsys.readouterr().err)
+            assert payload["status"] == "error"
+            assert payload["code"] == "confirmation_required"
+            assert await catalog_model.find_entry_by_id("areas", ObjectId(duplicate_id)) is not None
+
+    asyncio.run(scenario())
+
+
+def test_clean_catalog_duplicates_with_confirm_deletes_duplicate_and_reports_result(
+    use_test_db, capsys
+) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            kept_id = await _seed_catalog_entry("areas", "Ventas")
+            duplicate_id = await _seed_catalog_entry("areas", " ventas ")
+
+            exit_code = await cli.run(
+                ["clean-catalog-duplicates", "--collection", "areas", "--confirm"]
+            )
+
+            assert exit_code == 0
+            payload = json.loads(capsys.readouterr().out)
+            assert payload["status"] == "ok"
+            assert payload["total_duplicate_groups_cleaned"] == 1
+            group = payload["cleaned_groups"][0]
+            assert group["normalized_name"] == "ventas"
+            assert group["kept_id"] in {kept_id, duplicate_id}
+            deleted_id = duplicate_id if group["kept_id"] == kept_id else kept_id
+            assert group["deleted_ids"] == [deleted_id]
+            assert await catalog_model.find_entry_by_id("areas", ObjectId(deleted_id)) is None
+
+    asyncio.run(scenario())
+
+
+def test_catalog_duplicates_commands_reject_collection_outside_areas_and_estados(
+    use_test_db, capsys
+) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            exit_code = await cli.run(["diagnose-catalog-duplicates", "--collection", "empleados"])
+
+            assert exit_code == 4
+            payload = json.loads(capsys.readouterr().err)
+            assert payload["status"] == "error"
+            assert payload["code"] == "invalid_arguments"
 
     asyncio.run(scenario())

@@ -24,7 +24,13 @@ from src.schemas.history import HistoryQuery
 from src.schemas.schedule import DefaultScheduleUpdate
 from src.schemas.user import UserCreate
 from src.services.auth_service import EmailAlreadyExistsError, register_user
-from src.services import catalog_service, history_service, schedule_service, user_service
+from src.services import (
+    catalog_cleanup_service,
+    catalog_service,
+    history_service,
+    schedule_service,
+    user_service,
+)
 from src.services.employee_service import (
     DuplicateEmployeeError,
     EmployeeNotFoundError,
@@ -46,6 +52,7 @@ EXIT_NOT_FOUND = 3
 EXIT_INVALID_ARGS = 4
 
 _ENTITY_CODE = {"Área": "area", "Estado": "status"}
+_CATALOG_LABELS = {"areas": "Área", "estados": "Estado"}
 
 
 class _InvalidArgumentsError(Exception):
@@ -54,6 +61,11 @@ class _InvalidArgumentsError(Exception):
 
 class _InvalidDaysError(Exception):
     pass
+
+
+class _ConfirmationRequiredError(Exception):
+    def __init__(self) -> None:
+        super().__init__("Debe incluir --confirm para ejecutar la limpieza de duplicados")
 
 
 class _UserNotFoundError(Exception):
@@ -235,6 +247,23 @@ def _build_parser() -> _ArgumentParser:
     set_range_status_parser.add_argument("--status", required=True)
 
     subparsers.add_parser("list-users", help="Lista las cuentas de usuario")
+
+    diagnose_duplicates_parser = subparsers.add_parser(
+        "diagnose-catalog-duplicates",
+        help="Reporta duplicados de nombre en un catálogo sin modificar nada",
+    )
+    diagnose_duplicates_parser.add_argument(
+        "--collection", required=True, choices=["areas", "estados"]
+    )
+
+    clean_duplicates_parser = subparsers.add_parser(
+        "clean-catalog-duplicates",
+        help="Elimina duplicados de nombre en un catálogo, reasignando referencias",
+    )
+    clean_duplicates_parser.add_argument(
+        "--collection", required=True, choices=["areas", "estados"]
+    )
+    clean_duplicates_parser.add_argument("--confirm", action="store_true")
 
     return parser
 
@@ -647,6 +676,59 @@ async def _list_users() -> dict[str, Any]:
     return {"users": [_user_payload(user) for user in users]}
 
 
+def _duplicate_entry_payload(entry: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": str(entry["_id"]),
+        "name": entry["name"],
+        "is_enabled": entry["is_enabled"],
+        "created_at": entry["created_at"].isoformat(),
+        "reference_count": entry["reference_count"],
+    }
+
+
+def _duplicate_group_payload(group: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "normalized_name": group["normalized_name"],
+        "entries": [_duplicate_entry_payload(entry) for entry in group["entries"]],
+        "keep_id": str(group["keep_id"]),
+    }
+
+
+async def _diagnose_catalog_duplicates(collection_name: str) -> dict[str, Any]:
+    groups = await catalog_cleanup_service.diagnose_duplicates(
+        collection_name, _CATALOG_LABELS[collection_name]
+    )
+    return {
+        "collection": collection_name,
+        "duplicate_groups": [_duplicate_group_payload(group) for group in groups],
+        "total_duplicate_groups": len(groups),
+    }
+
+
+def _cleaned_group_payload(group: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "normalized_name": group["normalized_name"],
+        "kept_id": str(group["kept_id"]),
+        "deleted_ids": [str(entry_id) for entry_id in group["deleted_ids"]],
+        "reassigned_employees": group["reassigned_employees"],
+        "reassigned_exceptions": group["reassigned_exceptions"],
+    }
+
+
+async def _clean_catalog_duplicates(collection_name: str, confirm: bool) -> dict[str, Any]:
+    if not confirm:
+        raise _ConfirmationRequiredError()
+
+    groups = await catalog_cleanup_service.clean_duplicates(
+        collection_name, _CATALOG_LABELS[collection_name], {"_id": None, "full_name": "CLI"}
+    )
+    return {
+        "collection": collection_name,
+        "cleaned_groups": [_cleaned_group_payload(group) for group in groups],
+        "total_duplicate_groups_cleaned": len(groups),
+    }
+
+
 def _enabled_filter(args: argparse.Namespace) -> bool | None:
     if getattr(args, "enabled_flag", False):
         return True
@@ -718,6 +800,10 @@ async def _dispatch(args: argparse.Namespace) -> dict[str, Any]:
         return await _set_range_status(
             args.employee_id, args.start_date, args.end_date, args.status
         )
+    if args.command == "diagnose-catalog-duplicates":
+        return await _diagnose_catalog_duplicates(args.collection)
+    if args.command == "clean-catalog-duplicates":
+        return await _clean_catalog_duplicates(args.collection, args.confirm)
     return await _list_users()
 
 
@@ -768,6 +854,9 @@ async def _execute(args: argparse.Namespace) -> int:
         return EXIT_INVALID_ARGS
     except _InvalidDaysError as exc:
         _print_error("invalid_days", str(exc))
+        return EXIT_INVALID_ARGS
+    except _ConfirmationRequiredError as exc:
+        _print_error("confirmation_required", str(exc))
         return EXIT_INVALID_ARGS
     except schedule_service.RangeConflictError as exc:
         error = {

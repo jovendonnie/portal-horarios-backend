@@ -151,6 +151,32 @@ def test_record_change_returns_inserted_document_with_id_set(use_test_db) -> Non
     asyncio.run(scenario())
 
 
+def test_record_change_accepts_delete_duplicate_action_without_a_literal_restriction(
+    use_test_db,
+) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            entity_id = ObjectId()
+            kept_id = ObjectId()
+            ahora = _ahora()
+            changes = [
+                {"field": "merged_into_id", "old_value": None, "new_value": kept_id},
+                {"field": "reassigned_employees", "old_value": None, "new_value": 1},
+            ]
+
+            await history_service.record_change(
+                None, "area", entity_id, "delete_duplicate", changes, ACTOR, ahora
+            )
+
+            entries = await list_entries({"entity_id": entity_id})
+
+            assert len(entries) == 1
+            assert entries[0]["action"] == "delete_duplicate"
+            assert entries[0]["changes"] == changes
+
+    asyncio.run(scenario())
+
+
 def test_record_login_attempt_with_existing_user_uses_user_id_and_name(use_test_db) -> None:
     async def scenario() -> None:
         async with mongo_test_session():

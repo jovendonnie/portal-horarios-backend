@@ -10,6 +10,7 @@ from src.core.database import get_database, start_transaction
 from src.models.schedule import (
     DEFAULT_SCHEDULES_COLLECTION,
     SCHEDULE_EXCEPTIONS_COLLECTION,
+    count_exceptions_by_status,
     delete_day_exception,
     ensure_indexes,
     find_default_schedule,
@@ -17,6 +18,7 @@ from src.models.schedule import (
     find_exception,
     find_exceptions_bulk,
     insert_range_exceptions,
+    reassign_status_in_exceptions,
     upsert_day_exception,
     upsert_default_schedule,
 )
@@ -225,6 +227,91 @@ def test_find_default_schedules_bulk_returns_only_matching_documents(use_test_db
 
             found_employee_ids = {doc["employee_id"] for doc in found}
             assert found_employee_ids == {employee_a}
+
+    asyncio.run(scenario())
+
+
+def _make_range_override(
+    employee_id: Any, date: str, status_id: Any, actor_id: Any, range_id: Any
+) -> dict[str, Any]:
+    return {
+        "employee_id": employee_id,
+        "date": date,
+        "status_id": status_id,
+        "observation": None,
+        "source": "range_override",
+        "range_id": range_id,
+        "updated_at": None,
+        "updated_by": actor_id,
+    }
+
+
+def test_count_exceptions_by_status_counts_day_and_range_overrides(use_test_db) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            status_id = ObjectId()
+            other_status_id = ObjectId()
+            actor_id = ObjectId()
+            employee_id = ObjectId()
+
+            await upsert_day_exception(employee_id, "2026-10-15", status_id, None, actor_id)
+            await insert_range_exceptions(
+                [_make_range_override(employee_id, "2026-10-16", status_id, actor_id, ObjectId())]
+            )
+            await upsert_day_exception(
+                employee_id, "2026-10-17", other_status_id, None, actor_id
+            )
+
+            assert await count_exceptions_by_status(status_id) == 2
+            assert await count_exceptions_by_status(other_status_id) == 1
+            assert await count_exceptions_by_status(ObjectId()) == 0
+
+    asyncio.run(scenario())
+
+
+def test_reassign_status_in_exceptions_updates_day_and_range_overrides(use_test_db) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            old_status_id = ObjectId()
+            new_status_id = ObjectId()
+            other_status_id = ObjectId()
+            actor_id = ObjectId()
+            employee_id = ObjectId()
+
+            await upsert_day_exception(employee_id, "2026-10-15", old_status_id, None, actor_id)
+            await insert_range_exceptions(
+                [
+                    _make_range_override(
+                        employee_id, "2026-10-16", old_status_id, actor_id, ObjectId()
+                    )
+                ]
+            )
+            await upsert_day_exception(
+                employee_id, "2026-10-17", other_status_id, None, actor_id
+            )
+
+            modified = await reassign_status_in_exceptions(old_status_id, new_status_id)
+
+            day_override = await find_exception(employee_id, "2026-10-15")
+            range_override = await find_exception(employee_id, "2026-10-16")
+            untouched = await find_exception(employee_id, "2026-10-17")
+
+            assert modified == 2
+            assert day_override["status_id"] == new_status_id
+            assert range_override["status_id"] == new_status_id
+            assert untouched["status_id"] == other_status_id
+
+    asyncio.run(scenario())
+
+
+def test_reassign_status_in_exceptions_returns_zero_when_no_exception_matches(
+    use_test_db,
+) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            modified = await reassign_status_in_exceptions(ObjectId(), ObjectId())
+
+            assert modified == 0
 
     asyncio.run(scenario())
 

@@ -128,3 +128,24 @@ async def insert_range_exceptions(
         result = await db[SCHEDULE_EXCEPTIONS_COLLECTION].insert_one(doc, session=session)
         inserted_ids.append(result.inserted_id)
     return inserted_ids
+
+
+async def count_exceptions_by_status(status_id: Any) -> int:
+    db = get_database()
+    return await db[SCHEDULE_EXCEPTIONS_COLLECTION].count_documents(
+        {"status_id": status_id}
+    )
+
+
+async def reassign_status_in_exceptions(
+    old_status_id: Any,
+    new_status_id: Any,
+    session: AsyncIOMotorClientSession | None = None,
+) -> int:
+    db = get_database()
+    result = await db[SCHEDULE_EXCEPTIONS_COLLECTION].update_many(
+        {"status_id": old_status_id},
+        {"$set": {"status_id": new_status_id}},
+        session=session,
+    )
+    return result.modified_count

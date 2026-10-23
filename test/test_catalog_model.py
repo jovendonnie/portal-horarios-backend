@@ -8,6 +8,7 @@ from pymongo.errors import DuplicateKeyError
 from conftest import mongo_test_session
 from src.models.catalog import (
     count_enabled,
+    delete_entry,
     ensure_indexes,
     find_entry_by_id,
     find_entry_by_name,
@@ -336,6 +337,55 @@ def test_insert_entry_behaves_the_same_with_explicit_session_none(
             assert without_arg is not None
             assert with_none is not None
             assert without_arg != with_none
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("collection_name", COLLECTIONS)
+def test_delete_entry_removes_existing_entry(use_test_db, collection_name) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            actor_id = ObjectId()
+            ahora = _ahora()
+
+            entry_id = await insert_entry(collection_name, "Ventas", actor_id, ahora)
+
+            deleted = await delete_entry(collection_name, entry_id)
+            found = await find_entry_by_id(collection_name, entry_id)
+
+            assert deleted is True
+            assert found is None
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("collection_name", COLLECTIONS)
+def test_delete_entry_returns_false_when_not_found(use_test_db, collection_name) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            deleted = await delete_entry(collection_name, ObjectId())
+
+            assert deleted is False
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("collection_name", COLLECTIONS)
+def test_delete_entry_behaves_the_same_with_explicit_session_none(
+    use_test_db, collection_name
+) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            actor_id = ObjectId()
+            ahora = _ahora()
+
+            entry_id = await insert_entry(collection_name, "Ventas", actor_id, ahora)
+
+            deleted = await delete_entry(collection_name, entry_id, session=None)
+            found = await find_entry_by_id(collection_name, entry_id)
+
+            assert deleted is True
+            assert found is None
 
     asyncio.run(scenario())
 
