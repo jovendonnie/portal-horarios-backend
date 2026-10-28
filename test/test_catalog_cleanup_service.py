@@ -9,6 +9,7 @@ from src.models import catalog as catalog_model
 from src.models.employee import find_employee_by_id, insert_employee
 from src.models.history import list_entries as list_history_entries
 from src.models.schedule import find_exception, upsert_day_exception
+from src.schemas.history import HistoryEntryOut
 from src.services import catalog_cleanup_service, history_service
 
 ACTOR = {"_id": ObjectId(), "full_name": "Admin Actor"}
@@ -203,6 +204,31 @@ def test_clean_duplicates_is_atomic_when_history_fails_mid_group(use_test_db, mo
             employee_b = await find_employee_by_id(employee_b_id)
             assert employee_a["area_id"] == loser_a_id
             assert employee_b["area_id"] == loser_b_id
+
+    asyncio.run(scenario())
+
+
+def test_clean_duplicates_history_entry_is_serializable_as_history_entry_out(use_test_db) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            base = _ahora()
+            kept_id = await catalog_model.insert_entry("areas", "Ventas", ACTOR["_id"], base)
+            duplicate_id = await catalog_model.insert_entry(
+                "areas", " ventas ", ACTOR["_id"], base + timedelta(seconds=1)
+            )
+            await insert_employee(
+                {"nombre_completo": "Kept Uno", "cargo": "lider", "area": "Ventas", "area_id": kept_id}
+            )
+
+            await catalog_cleanup_service.clean_duplicates("areas", "Área", ACTOR)
+
+            history_entries = await list_history_entries({"entity_id": duplicate_id})
+            assert len(history_entries) == 1
+            entry_out = HistoryEntryOut(**history_entries[0])
+            merged_into_change = next(
+                change for change in entry_out.changes if change.field == "merged_into_id"
+            )
+            assert merged_into_change.new_value == str(kept_id)
 
     asyncio.run(scenario())
 

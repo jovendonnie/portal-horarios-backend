@@ -7,7 +7,7 @@ FastAPI ni HTTPException: esa traducción vive en src/api/routes/schedules.py
 """
 
 from datetime import date, datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
 from bson import ObjectId
@@ -20,10 +20,14 @@ from src.models import schedule as schedule_model
 from src.models.employee import find_employee_by_id
 from src.models.employee import list_employees as list_employee_documents
 from src.schemas.schedule import (
+    BulkAssignmentSkipped,
     DefaultScheduleDayIn,
     EmployeeDefaultScheduleOut,
     EmployeeWeekScheduleOut,
+    Modality,
     ScheduleDayEntryOut,
+    TimeRangeIn,
+    Weekday,
     WeekScheduleResponse,
     WEEKDAYS,
 )
@@ -142,7 +146,9 @@ def resolve_day(
     exception: dict[str, Any] | None,
     absence_status_ids: set[Any],
 ) -> dict[str, Any]:
-    """Algoritmo (a) de plan.md: resuelve modalidad, franjas y origen de un día (RF-3)."""
+    """Algoritmo (a) de plan.md (extendido por el algoritmo (d) de
+    specs/008-asignacion-masiva-de-horarios/plan.md): resuelve modalidad,
+    franjas y origen de un día (RF-3; RF-5 de la spec 008)."""
     weekday_name = WEEKDAYS[day.weekday()]
     day_schedule = next(
         (d for d in default_schedule_days if d["weekday"] == weekday_name),
@@ -152,12 +158,27 @@ def resolve_day(
     if exception is not None:
         status_id = exception["status_id"]
         source = exception["source"]
+        # Spec 008 RF-5: una excepción puede traer su propia modalidad/franjas (turno
+        # masivo); las excepciones creadas antes de esta spec nunca tienen estas claves.
+        override_modality = exception.get("modality")
+        override_time_ranges = exception.get("time_ranges") or []
     else:
         status_id = employee["estado_id"]
         source = "default"
+        override_modality = None
+        override_time_ranges = []
 
     if status_id in absence_status_ids:
         return {"date": day, "status_id": status_id, "modality": None, "time_ranges": [], "source": source}
+
+    if override_modality is not None and override_time_ranges:
+        return {
+            "date": day,
+            "status_id": status_id,
+            "modality": override_modality,
+            "time_ranges": override_time_ranges,
+            "source": source,
+        }
 
     if exception is None and not day_schedule["works"]:
         return {"date": day, "status_id": status_id, "modality": None, "time_ranges": [], "source": source}
@@ -299,7 +320,7 @@ async def apply_day_exception(
     date_str = day.isoformat()
     current_exception = await schedule_model.find_exception(employee_id, date_str)
 
-    if current_exception is not None and current_exception["source"] == "range_override":
+    if current_exception is not None and current_exception["source"] in ("range_override", "shift_override"):
         raise DayConflictError()
 
     current_updated_at = current_exception["updated_at"] if current_exception is not None else None
@@ -332,7 +353,7 @@ async def revert_day_exception(
     default_days = await _get_default_schedule_days(employee_id)
     absence_ids = await _absence_status_ids()
 
-    if current_exception is None or current_exception["source"] == "range_override":
+    if current_exception is None or current_exception["source"] in ("range_override", "shift_override"):
         resolved = resolve_day(employee, day, default_days, current_exception, absence_ids)
         status_entry = await catalog.find_entry_by_id("estados", resolved["status_id"])
         status_name = status_entry["name"] if status_entry is not None else ""
@@ -415,6 +436,92 @@ async def apply_range_status(
         resolved = resolve_day(employee, day, default_days, document, absence_ids)
         results.append(_build_schedule_day_entry_out(resolved, status_entry["name"], document))
     return results
+
+
+async def apply_bulk_assignment(
+    employee_ids: list[str],
+    start_date: date,
+    end_date: date,
+    weekdays: list[Weekday],
+    kind: Literal["shift", "status"],
+    status_id: str | None,
+    modality: Modality | None,
+    time_ranges: list[TimeRangeIn],
+    actor: dict[str, Any],
+) -> tuple[list[ScheduleDayEntryOut], list[BulkAssignmentSkipped]]:
+    """Algoritmo (e) de specs/008-asignacion-masiva-de-horarios/plan.md: asigna
+    un turno o una novedad a varios empleados a la vez, saltando (sin abortar
+    el resto) cualquier combinación empleado+día que ya tenga una excepción
+    (RF-1 a RF-5)."""
+    if start_date > end_date:
+        raise InvalidRangeError()
+
+    weekday_set = set(weekdays)
+    candidate_dates = [
+        day for day in _business_days_between(start_date, end_date) if WEEKDAYS[day.weekday()] in weekday_set
+    ]
+    if not candidate_dates:
+        raise InvalidRangeError()
+
+    status_entry = None
+    if kind == "status":
+        status_entry = await _validate_status_id(status_id)  # type: ignore[arg-type]
+
+    time_range_dicts = [tr.model_dump() for tr in time_ranges] if kind == "shift" else []
+
+    _, status_names = await _resolve_catalog_names()
+    absence_ids = await _absence_status_ids()
+
+    created: list[ScheduleDayEntryOut] = []
+    skipped: list[BulkAssignmentSkipped] = []
+
+    for raw_employee_id in employee_ids:
+        try:
+            employee_id = ObjectId(raw_employee_id)
+        except InvalidId:
+            skipped.append(BulkAssignmentSkipped(employee_id=raw_employee_id, reason="id de empleado inválido"))
+            continue
+
+        employee = await find_employee_by_id(employee_id)
+        if employee is None:
+            skipped.append(
+                BulkAssignmentSkipped(employee_id=raw_employee_id, skipped_date=None, reason="empleado no encontrado")
+            )
+            continue
+
+        default_days = await _get_default_schedule_days(employee_id)
+        employee_status_id = status_entry["_id"] if kind == "status" else employee["estado_id"]
+        range_id = ObjectId()
+
+        for day in candidate_dates:
+            date_str = day.isoformat()
+            existing = await schedule_model.find_exception(employee_id, date_str)
+            if existing is not None:
+                existing_name = status_names.get(str(existing.get("status_id")), "")
+                skipped.append(
+                    BulkAssignmentSkipped(
+                        employee_id=str(employee_id),
+                        skipped_date=day,
+                        reason=f"ya tiene asignado: {existing_name or 'un horario especial'}",
+                    )
+                )
+                continue
+
+            document = await schedule_model.upsert_bulk_exception(
+                employee_id=employee_id,
+                date=date_str,
+                status_id=employee_status_id,
+                modality=modality if kind == "shift" else None,
+                time_ranges=time_range_dicts,
+                source="shift_override" if kind == "shift" else "range_override",
+                range_id=range_id,
+                actor=actor.get("_id"),
+            )
+            resolved = resolve_day(employee, day, default_days, document, absence_ids)
+            status_name = status_entry["name"] if kind == "status" else status_names.get(str(employee_status_id), "")
+            created.append(_build_schedule_day_entry_out(resolved, status_name, document))
+
+    return created, skipped
 
 
 async def get_week_schedule_view(offset: int) -> WeekScheduleResponse:

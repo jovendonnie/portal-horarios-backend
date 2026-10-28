@@ -74,7 +74,7 @@ async def clean_duplicates(
                         {
                             "field": "merged_into_id",
                             "old_value": None,
-                            "new_value": group["keep_id"],
+                            "new_value": str(group["keep_id"]),
                         }
                     ]
                     if collection_name == "areas":

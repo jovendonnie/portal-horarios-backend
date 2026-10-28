@@ -13,7 +13,7 @@ class UserCreate(BaseModel):
 class UserOut(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
-    id: str = Field(alias="_id")
+    id: str = Field(validation_alias="_id")
     full_name: str
     email: str
     role: str

@@ -1,6 +1,7 @@
 from datetime import datetime
 from typing import Any, Literal
 
+from bson import ObjectId
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 EntityType = Literal["employee", "area", "status", "user", "login"]
@@ -11,11 +12,16 @@ class HistoryChange(BaseModel):
     old_value: Any
     new_value: Any
 
+    @field_validator("old_value", "new_value", mode="before")
+    @classmethod
+    def stringify_object_id(cls, value: object) -> object:
+        return str(value) if isinstance(value, ObjectId) else value
+
 
 class HistoryEntryOut(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
-    id: str = Field(alias="_id")
+    id: str = Field(validation_alias="_id")
     entity_type: EntityType
     entity_id: str | None = None
     action: str

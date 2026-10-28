@@ -3,6 +3,7 @@ from bson import ObjectId
 from pydantic import ValidationError
 
 from src.schemas.schedule import (
+    BulkAssignmentInput,
     DateRangeStatusChangeInput,
     DayStatusChangeInput,
     DayStatusRevertInput,
@@ -123,7 +124,7 @@ def test_schedule_day_entry_out_rejects_invalid_source() -> None:
         )
 
 
-@pytest.mark.parametrize("source", ["default", "day_override", "range_override"])
+@pytest.mark.parametrize("source", ["default", "day_override", "range_override", "shift_override"])
 def test_schedule_day_entry_out_accepts_valid_sources(source: str) -> None:
     entry = ScheduleDayEntryOut(
         date="2026-10-15",
@@ -237,3 +238,68 @@ def test_date_range_status_change_input_does_not_validate_date_order() -> None:
     )
 
     assert range_input.start_date > range_input.end_date
+
+
+def _bulk_shift_kwargs(**overrides) -> dict:
+    kwargs = {
+        "employee_ids": [str(ObjectId())],
+        "start_date": "2026-10-12",
+        "end_date": "2026-10-16",
+        "weekdays": ["monday", "tuesday"],
+        "kind": "shift",
+        "modality": "presencial",
+        "time_ranges": [TimeRangeIn(start="08:00", end="12:00")],
+    }
+    kwargs.update(overrides)
+    return kwargs
+
+
+def test_bulk_assignment_input_accepts_valid_shift_payload() -> None:
+    bulk = BulkAssignmentInput(**_bulk_shift_kwargs())
+
+    assert bulk.kind == "shift"
+    assert bulk.time_ranges[0].start == "08:00"
+
+
+def test_bulk_assignment_input_accepts_valid_status_payload() -> None:
+    bulk = BulkAssignmentInput(
+        employee_ids=[str(ObjectId())],
+        start_date="2026-10-12",
+        end_date="2026-10-16",
+        weekdays=["monday"],
+        kind="status",
+        status_id=str(ObjectId()),
+    )
+
+    assert bulk.kind == "status"
+
+
+def test_bulk_assignment_input_rejects_start_after_end() -> None:
+    with pytest.raises(ValidationError):
+        BulkAssignmentInput(**_bulk_shift_kwargs(start_date="2026-10-16", end_date="2026-10-12"))
+
+
+def test_bulk_assignment_input_rejects_duplicate_weekdays() -> None:
+    with pytest.raises(ValidationError):
+        BulkAssignmentInput(**_bulk_shift_kwargs(weekdays=["monday", "monday"]))
+
+
+def test_bulk_assignment_input_rejects_shift_without_time_ranges() -> None:
+    with pytest.raises(ValidationError):
+        BulkAssignmentInput(**_bulk_shift_kwargs(time_ranges=[]))
+
+
+def test_bulk_assignment_input_rejects_status_without_status_id() -> None:
+    with pytest.raises(ValidationError):
+        BulkAssignmentInput(
+            employee_ids=[str(ObjectId())],
+            start_date="2026-10-12",
+            end_date="2026-10-16",
+            weekdays=["monday"],
+            kind="status",
+        )
+
+
+def test_bulk_assignment_input_rejects_empty_employee_list() -> None:
+    with pytest.raises(ValidationError):
+        BulkAssignmentInput(**_bulk_shift_kwargs(employee_ids=[]))

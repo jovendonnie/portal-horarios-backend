@@ -9,6 +9,7 @@ from conftest import mongo_test_session
 from src.core.database import get_database
 from src.models import schedule as schedule_model
 from src.models.schedule import find_exceptions_bulk, upsert_day_exception, upsert_default_schedule
+from src.schemas.schedule import TimeRangeIn
 from src.services import schedule_service
 from src.services.employee_service import EmployeeNotFoundError
 
@@ -142,6 +143,65 @@ def test_resolve_day_exception_not_absence_inherits_default_modality() -> None:
 
     assert resolved["source"] == "range_override"
     assert resolved["status_id"] == status_id
+    assert resolved["modality"] == "presencial"
+    assert resolved["time_ranges"] == [{"start": "08:00", "end": "17:00"}]
+
+
+# ---------------------------------------------------------------------------
+# Spec 008 RF-5 — resolve_day con modalidad/franjas propias (shift_override)
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_day_shift_override_uses_its_own_modality_and_ranges() -> None:
+    status_id = ObjectId()
+    employee = {"estado_id": status_id}
+    day = date(2026, 10, 12)
+    exception = {
+        "status_id": status_id,
+        "source": "shift_override",
+        "modality": "virtual",
+        "time_ranges": [{"start": "09:00", "end": "13:00"}],
+    }
+
+    resolved = schedule_service.resolve_day(
+        employee, day, _default_days(works=True), exception, set()
+    )
+
+    assert resolved["source"] == "shift_override"
+    assert resolved["modality"] == "virtual"
+    assert resolved["time_ranges"] == [{"start": "09:00", "end": "13:00"}]
+
+
+def test_resolve_day_shift_override_absence_wins_over_own_modality() -> None:
+    absence_id = ObjectId()
+    employee = {"estado_id": ObjectId()}
+    day = date(2026, 10, 12)
+    exception = {
+        "status_id": absence_id,
+        "source": "shift_override",
+        "modality": "virtual",
+        "time_ranges": [{"start": "09:00", "end": "13:00"}],
+    }
+
+    resolved = schedule_service.resolve_day(
+        employee, day, _default_days(works=True), exception, {absence_id}
+    )
+
+    assert resolved["modality"] is None
+    assert resolved["time_ranges"] == []
+
+
+def test_resolve_day_old_style_exception_without_override_keys_falls_back_to_default() -> None:
+    """Las excepciones creadas antes de la spec 008 nunca tienen modality/time_ranges."""
+    status_id = ObjectId()
+    employee = {"estado_id": ObjectId()}
+    day = date(2026, 10, 12)
+    exception = {"status_id": status_id, "source": "day_override"}
+
+    resolved = schedule_service.resolve_day(
+        employee, day, _default_days(works=True), exception, set()
+    )
+
     assert resolved["modality"] == "presencial"
     assert resolved["time_ranges"] == [{"start": "08:00", "end": "17:00"}]
 
@@ -575,5 +635,148 @@ def test_apply_range_status_atomicity_reverts_everything_on_partial_failure(
             )
             assert remaining == []
             assert call_count["value"] == 1
+
+    asyncio.run(scenario())
+
+
+# ---------------------------------------------------------------------------
+# Spec 008 — apply_bulk_assignment
+# ---------------------------------------------------------------------------
+
+
+def test_apply_bulk_assignment_shift_creates_shift_override_for_each_employee_and_day(
+    use_test_db, monkeypatch
+) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            _reset_absence_cache(monkeypatch)
+            status = await _insert_status("Presencial")
+            carla = await _insert_employee(status["_id"], full_name="Carla Gómez")
+            diego = await _insert_employee(status["_id"], full_name="Diego Ruiz")
+
+            created, skipped = await schedule_service.apply_bulk_assignment(
+                [str(carla["_id"]), str(diego["_id"])],
+                date(2026, 10, 12),
+                date(2026, 10, 13),
+                ["monday", "tuesday"],
+                "shift",
+                None,
+                "virtual",
+                [TimeRangeIn(start="09:00", end="13:00")],
+                ACTOR,
+            )
+
+            assert skipped == []
+            assert len(created) == 4  # 2 empleados x 2 días
+            assert all(entry.source == "shift_override" for entry in created)
+            assert all(entry.modality == "virtual" for entry in created)
+            assert all(entry.time_ranges[0].start == "09:00" for entry in created)
+
+    asyncio.run(scenario())
+
+
+def test_apply_bulk_assignment_status_creates_range_override(use_test_db, monkeypatch) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            _reset_absence_cache(monkeypatch)
+            status = await _insert_status("Vacaciones")
+            employee = await _insert_employee(status["_id"])
+
+            created, skipped = await schedule_service.apply_bulk_assignment(
+                [str(employee["_id"])],
+                date(2026, 10, 12),
+                date(2026, 10, 14),
+                ["monday", "tuesday", "wednesday"],
+                "status",
+                str(status["_id"]),
+                None,
+                [],
+                ACTOR,
+            )
+
+            assert skipped == []
+            assert len(created) == 3
+            assert all(entry.source == "range_override" for entry in created)
+            assert all(entry.modality is None for entry in created)  # Vacaciones es ausencia
+
+    asyncio.run(scenario())
+
+
+def test_apply_bulk_assignment_skips_existing_exception_and_continues(use_test_db, monkeypatch) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            _reset_absence_cache(monkeypatch)
+            status = await _insert_status("Presencial")
+            employee = await _insert_employee(status["_id"])
+            await upsert_day_exception(employee["_id"], "2026-10-13", status["_id"], None, ACTOR["_id"])
+
+            created, skipped = await schedule_service.apply_bulk_assignment(
+                [str(employee["_id"])],
+                date(2026, 10, 12),
+                date(2026, 10, 13),
+                ["monday", "tuesday"],
+                "shift",
+                None,
+                "presencial",
+                [TimeRangeIn(start="08:00", end="12:00")],
+                ACTOR,
+            )
+
+            assert len(created) == 1
+            assert created[0].date == date(2026, 10, 12)
+            assert len(skipped) == 1
+            assert skipped[0].skipped_date == date(2026, 10, 13)
+            assert "ya tiene asignado" in skipped[0].reason
+
+    asyncio.run(scenario())
+
+
+def test_apply_bulk_assignment_skips_unknown_employee_and_continues(use_test_db, monkeypatch) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            _reset_absence_cache(monkeypatch)
+            status = await _insert_status("Presencial")
+            employee = await _insert_employee(status["_id"])
+            unknown_id = str(ObjectId())
+
+            created, skipped = await schedule_service.apply_bulk_assignment(
+                [str(employee["_id"]), unknown_id],
+                date(2026, 10, 12),
+                date(2026, 10, 12),
+                ["monday"],
+                "shift",
+                None,
+                "presencial",
+                [TimeRangeIn(start="08:00", end="12:00")],
+                ACTOR,
+            )
+
+            assert len(created) == 1
+            assert len(skipped) == 1
+            assert skipped[0].employee_id == unknown_id
+            assert skipped[0].skipped_date is None
+            assert skipped[0].reason == "empleado no encontrado"
+
+    asyncio.run(scenario())
+
+
+def test_apply_bulk_assignment_rejects_range_with_no_matching_weekday(use_test_db, monkeypatch) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            status = await _insert_status("Presencial")
+            employee = await _insert_employee(status["_id"])
+
+            with pytest.raises(schedule_service.InvalidRangeError):
+                await schedule_service.apply_bulk_assignment(
+                    [str(employee["_id"])],
+                    date(2026, 10, 12),  # lunes
+                    date(2026, 10, 12),
+                    ["friday"],  # no coincide con ningún día del rango
+                    "shift",
+                    None,
+                    "presencial",
+                    [TimeRangeIn(start="08:00", end="12:00")],
+                    ACTOR,
+                )
 
     asyncio.run(scenario())

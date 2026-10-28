@@ -12,7 +12,7 @@ WEEKDAYS: tuple[Weekday, ...] = (
     "friday",
 )
 Modality = Literal["presencial", "virtual"]
-ScheduleSource = Literal["default", "day_override", "range_override"]
+ScheduleSource = Literal["default", "day_override", "range_override", "shift_override"]
 
 TIME_PATTERN = r"^([01]\d|2[0-3]):[0-5]\d$"
 
@@ -152,3 +152,44 @@ class DateRangeStatusChangeInput(BaseModel):
     start_date: date
     end_date: date
     status_id: str
+
+
+class BulkAssignmentInput(BaseModel):
+    """Spec 008 RF-1: asignación masiva de turno o novedad a varios empleados."""
+
+    employee_ids: list[str] = Field(min_length=1)
+    start_date: date
+    end_date: date
+    weekdays: list[Weekday] = Field(min_length=1)
+    kind: Literal["shift", "status"]
+    status_id: str | None = None
+    modality: Modality | None = None
+    time_ranges: list[TimeRangeIn] = []
+
+    @model_validator(mode="after")
+    def check_range_and_kind_payload(self) -> "BulkAssignmentInput":
+        if self.start_date > self.end_date:
+            raise ValueError("La fecha de inicio debe ser anterior o igual a la fecha de fin")
+        if len(set(self.weekdays)) != len(self.weekdays):
+            raise ValueError("No repitas días de la semana")
+        if self.kind == "status":
+            if not self.status_id:
+                raise ValueError("status_id es obligatorio para asignaciones de tipo estado")
+        else:
+            if self.modality is None or not self.time_ranges:
+                raise ValueError(
+                    "modality y al menos una franja horaria son obligatorios para "
+                    "asignaciones de tipo turno"
+                )
+        return self
+
+
+class BulkAssignmentSkipped(BaseModel):
+    employee_id: str
+    skipped_date: date | None = None
+    reason: str
+
+
+class BulkAssignmentResult(BaseModel):
+    created: list[ScheduleDayEntryOut]
+    skipped: list[BulkAssignmentSkipped]

@@ -13,11 +13,13 @@ from src.api.routes import schedules
 from src.core.database import get_database
 from src.models.schedule import upsert_day_exception, upsert_default_schedule
 from src.schemas.schedule import (
+    BulkAssignmentInput,
     DateRangeStatusChangeInput,
     DayStatusChangeInput,
     DayStatusRevertInput,
     DefaultScheduleDayIn,
     DefaultScheduleUpdate,
+    TimeRangeIn,
 )
 from src.services import schedule_service
 
@@ -95,6 +97,7 @@ def test_mutation_routes_require_schedule_write() -> None:
     assert _actor_dependency(schedules.apply_day_status_route) is require_schedule_write
     assert _actor_dependency(schedules.revert_day_status_route) is require_schedule_write
     assert _actor_dependency(schedules.apply_range_status_route) is require_schedule_write
+    assert _actor_dependency(schedules.apply_bulk_assignment_route) is require_schedule_write
 
 
 # ---------------------------------------------------------------------------
@@ -112,6 +115,7 @@ def test_router_registers_schedule_routes() -> None:
     assert set(schema["paths"]["/schedules/day-status"].keys()) >= {"patch"}
     assert set(schema["paths"]["/schedules/day-status/revert"].keys()) >= {"patch"}
     assert set(schema["paths"]["/schedules/range-status"].keys()) >= {"post"}
+    assert set(schema["paths"]["/schedules/bulk"].keys()) >= {"post"}
 
 
 # ---------------------------------------------------------------------------
@@ -421,5 +425,86 @@ def test_apply_range_status_route_maps_invalid_range_to_422(use_test_db) -> None
                 await schedules.apply_range_status_route(data, actor=ACTOR)
 
             assert exc_info.value.status_code == 422
+
+    asyncio.run(scenario())
+
+
+# ---------------------------------------------------------------------------
+# Spec 008 — POST /schedules/bulk
+# ---------------------------------------------------------------------------
+
+
+def test_apply_bulk_assignment_route_success(use_test_db, monkeypatch) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            _reset_absence_cache(monkeypatch)
+            status = await _insert_status("Presencial")
+            employee = await _insert_employee(status["_id"])
+
+            data = BulkAssignmentInput(
+                employee_ids=[str(employee["_id"])],
+                start_date="2026-10-12",
+                end_date="2026-10-13",
+                weekdays=["monday", "tuesday"],
+                kind="shift",
+                modality="presencial",
+                time_ranges=[TimeRangeIn(start="08:00", end="12:00")],
+            )
+
+            result = await schedules.apply_bulk_assignment_route(data, actor=ACTOR)
+
+            assert len(result.created) == 2
+            assert result.skipped == []
+            assert all(entry.source == "shift_override" for entry in result.created)
+
+    asyncio.run(scenario())
+
+
+def test_apply_bulk_assignment_route_maps_invalid_range_to_422(use_test_db) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            status = await _insert_status("Presencial")
+            employee = await _insert_employee(status["_id"])
+
+            data = BulkAssignmentInput(
+                employee_ids=[str(employee["_id"])],
+                start_date="2026-10-17",
+                end_date="2026-10-18",
+                weekdays=["monday"],
+                kind="shift",
+                modality="presencial",
+                time_ranges=[TimeRangeIn(start="08:00", end="12:00")],
+            )  # sábado y domingo, no coincide con ningún día hábil
+
+            with pytest.raises(HTTPException) as exc_info:
+                await schedules.apply_bulk_assignment_route(data, actor=ACTOR)
+
+            assert exc_info.value.status_code == 422
+
+    asyncio.run(scenario())
+
+
+def test_apply_bulk_assignment_route_skips_conflicting_day(use_test_db, monkeypatch) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            _reset_absence_cache(monkeypatch)
+            status = await _insert_status("Presencial")
+            employee = await _insert_employee(status["_id"])
+            await upsert_day_exception(employee["_id"], "2026-10-13", status["_id"], None, ACTOR["_id"])
+
+            data = BulkAssignmentInput(
+                employee_ids=[str(employee["_id"])],
+                start_date="2026-10-12",
+                end_date="2026-10-13",
+                weekdays=["monday", "tuesday"],
+                kind="shift",
+                modality="presencial",
+                time_ranges=[TimeRangeIn(start="08:00", end="12:00")],
+            )
+
+            result = await schedules.apply_bulk_assignment_route(data, actor=ACTOR)
+
+            assert len(result.created) == 1
+            assert len(result.skipped) == 1
 
     asyncio.run(scenario())

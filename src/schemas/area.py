@@ -14,7 +14,7 @@ class AreaUpdate(BaseModel):
 class AreaOut(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
-    id: str = Field(alias="_id")
+    id: str = Field(validation_alias="_id")
     name: str
     is_enabled: bool
     created_at: datetime

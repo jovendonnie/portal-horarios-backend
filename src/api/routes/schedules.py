@@ -6,6 +6,8 @@ from fastapi import APIRouter, Depends, HTTPException, status
 
 from src.api.deps import require_read, require_schedule_write
 from src.schemas.schedule import (
+    BulkAssignmentInput,
+    BulkAssignmentResult,
     DateRangeStatusChangeInput,
     DayStatusChangeInput,
     DayStatusRevertInput,
@@ -21,6 +23,7 @@ from src.services.schedule_service import (
     NonBusinessDayError,
     RangeConflictError,
     StaleScheduleUpdateError,
+    apply_bulk_assignment,
     apply_day_exception,
     apply_range_status,
     get_default_schedule,
@@ -119,3 +122,26 @@ async def apply_range_status_route(
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
     except RangeConflictError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+
+
+@router.post("/bulk", response_model=BulkAssignmentResult)
+async def apply_bulk_assignment_route(
+    data: BulkAssignmentInput, actor: dict = Depends(require_schedule_write)
+) -> BulkAssignmentResult:
+    try:
+        created, skipped = await apply_bulk_assignment(
+            data.employee_ids,
+            data.start_date,
+            data.end_date,
+            data.weekdays,
+            data.kind,
+            data.status_id,
+            data.modality,
+            data.time_ranges,
+            actor,
+        )
+        return BulkAssignmentResult(created=created, skipped=skipped)
+    except InvalidStatusError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
+    except InvalidRangeError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc

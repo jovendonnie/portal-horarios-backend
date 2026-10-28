@@ -130,6 +130,42 @@ async def insert_range_exceptions(
     return inserted_ids
 
 
+async def upsert_bulk_exception(
+    employee_id: Any,
+    date: str,
+    status_id: Any,
+    modality: str | None,
+    time_ranges: list[dict[str, Any]],
+    source: str,
+    range_id: Any,
+    actor: Any,
+    session: AsyncIOMotorClientSession | None = None,
+) -> dict[str, Any]:
+    """Spec 008 RF-4/RF-5: guarda una excepción de la asignación masiva, con
+    modalidad/franjas propias opcionales (ausentes para kind="status")."""
+    db = get_database()
+    now = datetime.now(timezone.utc)
+    document = {
+        "employee_id": employee_id,
+        "date": date,
+        "status_id": status_id,
+        "modality": modality,
+        "time_ranges": time_ranges,
+        "observation": None,
+        "source": source,
+        "range_id": range_id,
+        "updated_at": now,
+        "updated_by": actor,
+    }
+    await db[SCHEDULE_EXCEPTIONS_COLLECTION].update_one(
+        {"employee_id": employee_id, "date": date},
+        {"$set": document},
+        upsert=True,
+        session=session,
+    )
+    return document
+
+
 async def count_exceptions_by_status(status_id: Any) -> int:
     db = get_database()
     return await db[SCHEDULE_EXCEPTIONS_COLLECTION].count_documents(

@@ -19,6 +19,7 @@ from src.models.schedule import (
     find_exceptions_bulk,
     insert_range_exceptions,
     reassign_status_in_exceptions,
+    upsert_bulk_exception,
     upsert_day_exception,
     upsert_default_schedule,
 )
@@ -190,6 +191,34 @@ def test_upsert_day_exception_creates_day_override(use_test_db) -> None:
             found = await find_exception(employee_id, "2026-10-15")
             assert found["status_id"] == status_id
             assert found["observation"] == "Cita médica"
+
+    asyncio.run(scenario())
+
+
+def test_upsert_bulk_exception_creates_shift_override_with_modality_and_ranges(use_test_db) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            employee_id = ObjectId()
+            status_id = ObjectId()
+            actor_id = ObjectId()
+            range_id = ObjectId()
+
+            document = await upsert_bulk_exception(
+                employee_id=employee_id,
+                date="2026-10-15",
+                status_id=status_id,
+                modality="virtual",
+                time_ranges=[{"start": "09:00", "end": "13:00"}],
+                source="shift_override",
+                range_id=range_id,
+                actor=actor_id,
+            )
+
+            assert document["source"] == "shift_override"
+            found = await find_exception(employee_id, "2026-10-15")
+            assert found["modality"] == "virtual"
+            assert found["time_ranges"] == [{"start": "09:00", "end": "13:00"}]
+            assert found["range_id"] == range_id
 
     asyncio.run(scenario())
 
