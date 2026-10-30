@@ -73,3 +73,28 @@ def test_connect_to_mongo_soft_fails_when_index_has_preexisting_duplicates(
             assert "users" in caplog.text
 
     asyncio.run(scenario())
+
+
+def test_startup_creates_the_indexes_of_the_configuration_catalogs(use_test_db) -> None:
+    """Spec 009, RNF-1: sin estos índices, Cargos, Plantillas de turno y Festivos
+    admitirían duplicados."""
+
+    async def scenario() -> None:
+        async with mongo_test_session() as db:
+            await connect_to_mongo()
+
+            cargos = await db["cargos"].index_information()
+            templates = await db["shift_templates"].index_information()
+            holidays = await db["holidays"].index_information()
+
+            assert any(
+                spec.get("unique") and spec["key"] == [("name", 1)] for spec in cargos.values()
+            )
+            assert any(
+                spec.get("unique") and spec["key"] == [("name", 1)] for spec in templates.values()
+            )
+            assert any(
+                spec.get("unique") and spec["key"] == [("date", 1)] for spec in holidays.values()
+            )
+
+    asyncio.run(scenario())

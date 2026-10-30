@@ -10,7 +10,7 @@ from src.api.deps import require_admin, require_read
 from src.api.routes import areas, statuses
 from src.models.catalog import ensure_indexes
 from src.schemas.area import AreaCreate, AreaUpdate
-from src.schemas.estado import EstadoCreate, EstadoUpdate
+from src.schemas.estado import EstadoBlocksShiftsUpdate, EstadoCreate, EstadoUpdate
 
 ACTOR = {"_id": ObjectId(), "role": "admin", "full_name": "Admin Actor"}
 
@@ -259,3 +259,125 @@ def test_enable_entry_route_maps_not_found_to_404(
             assert exc_info.value.status_code == 404
 
     asyncio.run(scenario())
+
+
+# --- Spec 009: conteo real de empleados afectados (RF-6) y bloqueo de turnos (RF-5) ---
+
+async def _insert_employee(area_id, status_id) -> None:
+    from src.models.employee import insert_employee
+
+    await insert_employee(
+        {
+            "nombre_completo": f"Empleado {ObjectId()}",
+            "cargo": "lider",
+            "area": "Ventas",
+            "area_id": area_id,
+            "estado_id": status_id,
+        }
+    )
+
+
+def test_disable_area_route_reports_the_real_number_of_affected_employees(use_test_db) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await ensure_indexes("areas")
+            target = await areas.create_entry_route(AreaCreate(name="Ventas"), ACTOR)
+            other = await areas.create_entry_route(AreaCreate(name="Soporte"), ACTOR)
+            await _insert_employee(ObjectId(target.id), ObjectId())
+            await _insert_employee(ObjectId(target.id), ObjectId())
+            await _insert_employee(ObjectId(other.id), ObjectId())
+
+            disabled = await areas.disable_entry_route(target.id, ACTOR)
+
+            assert disabled.affected_employees == 2
+
+    asyncio.run(scenario())
+
+
+def test_disable_status_route_reports_the_real_number_of_affected_employees(use_test_db) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await ensure_indexes("estados")
+            target = await statuses.create_entry_route(EstadoCreate(name="Presencial"), ACTOR)
+            await statuses.create_entry_route(EstadoCreate(name="Vacaciones"), ACTOR)
+            await _insert_employee(ObjectId(), ObjectId(target.id))
+
+            disabled = await statuses.disable_entry_route(target.id, ACTOR)
+
+            assert disabled.affected_employees == 1
+
+    asyncio.run(scenario())
+
+
+def test_disable_route_reports_zero_when_nobody_is_assigned(use_test_db) -> None:
+    """Ahora el cero es real, no el placeholder que devolvía siempre 0 (RF-6)."""
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await ensure_indexes("areas")
+            target = await areas.create_entry_route(AreaCreate(name="Ventas"), ACTOR)
+            await areas.create_entry_route(AreaCreate(name="Soporte"), ACTOR)
+
+            disabled = await areas.disable_entry_route(target.id, ACTOR)
+
+            assert disabled.affected_employees == 0
+
+    asyncio.run(scenario())
+
+
+def test_create_status_route_accepts_the_blocks_shifts_flag(use_test_db) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await ensure_indexes("estados")
+
+            modality = await statuses.create_entry_route(EstadoCreate(name="Presencial"), ACTOR)
+            absence = await statuses.create_entry_route(
+                EstadoCreate(name="Licencia", blocks_shifts=True), ACTOR
+            )
+
+            assert modality.blocks_shifts is False
+            assert absence.blocks_shifts is True
+
+    asyncio.run(scenario())
+
+
+def test_set_blocks_shifts_route_updates_the_status(use_test_db) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await ensure_indexes("estados")
+            created = await statuses.create_entry_route(EstadoCreate(name="Comisión"), ACTOR)
+
+            updated = await statuses.set_blocks_shifts_route(
+                created.id, EstadoBlocksShiftsUpdate(blocks_shifts=True), ACTOR
+            )
+
+            assert updated.blocks_shifts is True
+
+            listed = await statuses.list_entries_route(None, ACTOR)
+            assert [entry.blocks_shifts for entry in listed] == [True]
+
+    asyncio.run(scenario())
+
+
+def test_set_blocks_shifts_route_requires_admin_and_maps_missing_ids_to_404(use_test_db) -> None:
+    assert _actor_dependency(statuses.set_blocks_shifts_route) is require_admin
+
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await ensure_indexes("estados")
+
+            for entry_id in (str(ObjectId()), "no-es-un-object-id"):
+                with pytest.raises(HTTPException) as exc_info:
+                    await statuses.set_blocks_shifts_route(
+                        entry_id, EstadoBlocksShiftsUpdate(blocks_shifts=True), ACTOR
+                    )
+                assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
+
+    asyncio.run(scenario())
+
+
+def test_router_registers_the_blocks_shifts_route() -> None:
+    from src.main import app
+
+    schema = app.openapi()
+
+    assert set(schema["paths"]["/statuses/{entry_id}/blocks-shifts"].keys()) >= {"patch"}

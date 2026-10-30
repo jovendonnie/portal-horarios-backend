@@ -5,7 +5,14 @@ from bson.errors import InvalidId
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from src.api.deps import require_admin, require_read
-from src.schemas.estado import EstadoCreate, EstadoDisableOut, EstadoOut, EstadoUpdate
+from src.models.employee import count_employees_by_status
+from src.schemas.estado import (
+    EstadoBlocksShiftsUpdate,
+    EstadoCreate,
+    EstadoDisableOut,
+    EstadoOut,
+    EstadoUpdate,
+)
 from src.services import catalog_service
 
 router = APIRouter(prefix="/statuses", tags=["statuses"])
@@ -14,9 +21,8 @@ COLLECTION_NAME = "estados"
 ENTITY_LABEL = "Estado"
 
 
-async def _count_assigned_employees(_entry_id: ObjectId) -> int:
-    # Placeholder hasta Fase 6 (count_employees_by_status en models/employee.py).
-    return 0
+async def _count_assigned_employees(entry_id: ObjectId) -> int:
+    return await count_employees_by_status(entry_id)
 
 
 def _parse_entry_id(entry_id: str) -> ObjectId:
@@ -29,7 +35,9 @@ def _parse_entry_id(entry_id: str) -> ObjectId:
 @router.post("", response_model=EstadoOut, status_code=status.HTTP_201_CREATED)
 async def create_entry_route(data: EstadoCreate, actor: dict = Depends(require_admin)) -> EstadoOut:
     try:
-        entry = await catalog_service.create_entry(COLLECTION_NAME, ENTITY_LABEL, data.name, actor)
+        entry = await catalog_service.create_entry(
+            COLLECTION_NAME, ENTITY_LABEL, data.name, actor, blocks_shifts=data.blocks_shifts
+        )
     except catalog_service.InvalidNameError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
     except catalog_service.DuplicateEntryError as exc:
@@ -59,6 +67,19 @@ async def rename_entry_route(
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
     except catalog_service.DuplicateEntryError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    return EstadoOut(**entry)
+
+
+@router.patch("/{entry_id}/blocks-shifts", response_model=EstadoOut)
+async def set_blocks_shifts_route(
+    entry_id: str, changes: EstadoBlocksShiftsUpdate, actor: dict = Depends(require_admin)
+) -> EstadoOut:
+    try:
+        entry = await catalog_service.set_blocks_shifts(
+            COLLECTION_NAME, ENTITY_LABEL, _parse_entry_id(entry_id), changes.blocks_shifts, actor
+        )
+    except catalog_service.EntryNotFoundError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
     return EstadoOut(**entry)
 
 

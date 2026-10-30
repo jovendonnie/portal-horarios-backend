@@ -4,7 +4,16 @@ from typing import Any, Literal
 from bson import ObjectId
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-EntityType = Literal["employee", "area", "status", "user", "login"]
+EntityType = Literal[
+    "employee",
+    "area",
+    "status",
+    "position",
+    "shift_template",
+    "holiday",
+    "user",
+    "login",
+]
 
 
 class HistoryChange(BaseModel):

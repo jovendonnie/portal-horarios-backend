@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime, timezone
 
 import pytest
 from bson import ObjectId
@@ -657,5 +658,161 @@ def test_seed_predefined_estados_is_idempotent(use_test_db) -> None:
 
             history_entries = await list_history_entries({"entity_type": "status"})
             assert len(history_entries) == len(catalog_service.PREDEFINED_STATUS_NAMES)
+
+    asyncio.run(scenario())
+
+
+# --- Spec 009: Estados que bloquean turnos (RF-5) ---
+
+def test_create_entry_marks_new_status_as_not_blocking_shifts_by_default(use_test_db) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await ensure_indexes("estados")
+
+            entry = await catalog_service.create_entry("estados", "Estado", "Comisión", ACTOR)
+
+            assert entry["blocks_shifts"] is False
+
+    asyncio.run(scenario())
+
+
+def test_create_entry_accepts_a_status_that_blocks_shifts(use_test_db) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await ensure_indexes("estados")
+
+            entry = await catalog_service.create_entry(
+                "estados", "Estado", "Suspensión", ACTOR, blocks_shifts=True
+            )
+
+            assert entry["blocks_shifts"] is True
+
+    asyncio.run(scenario())
+
+
+def test_create_entry_does_not_add_blocks_shifts_to_other_catalogs(use_test_db) -> None:
+    """El indicador es exclusivo de Estados: en Áreas y Cargos la clave no se escribe."""
+    async def scenario() -> None:
+        async with mongo_test_session():
+            for collection_name, entity_label in (("areas", "Área"), ("cargos", "Cargo")):
+                await ensure_indexes(collection_name)
+
+                entry = await catalog_service.create_entry(
+                    collection_name, entity_label, "Ventas", ACTOR, blocks_shifts=True
+                )
+
+                assert "blocks_shifts" not in entry
+
+    asyncio.run(scenario())
+
+
+def test_set_blocks_shifts_updates_the_status_and_audits_the_diff(use_test_db) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await ensure_indexes("estados")
+            created = await catalog_service.create_entry("estados", "Estado", "Comisión", ACTOR)
+
+            updated = await catalog_service.set_blocks_shifts(
+                "estados", "Estado", created["_id"], True, ACTOR
+            )
+
+            assert updated["blocks_shifts"] is True
+            assert updated["updated_by"] == ACTOR["_id"]
+
+            entries = await list_history_entries(
+                {"entity_type": "status", "entity_id": created["_id"], "action": "update"}
+            )
+            assert entries[0]["changes"] == [
+                {"field": "blocks_shifts", "old_value": False, "new_value": True}
+            ]
+
+    asyncio.run(scenario())
+
+
+def test_set_blocks_shifts_with_the_same_value_is_a_noop(use_test_db) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await ensure_indexes("estados")
+            created = await catalog_service.create_entry("estados", "Estado", "Comisión", ACTOR)
+
+            await catalog_service.set_blocks_shifts(
+                "estados", "Estado", created["_id"], False, ACTOR
+            )
+
+            entries = await list_history_entries(
+                {"entity_type": "status", "entity_id": created["_id"], "action": "update"}
+            )
+            assert entries == []
+
+    asyncio.run(scenario())
+
+
+def test_set_blocks_shifts_rejects_an_unknown_id(use_test_db) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await ensure_indexes("estados")
+
+            with pytest.raises(catalog_service.EntryNotFoundError):
+                await catalog_service.set_blocks_shifts(
+                    "estados", "Estado", ObjectId(), True, ACTOR
+                )
+
+    asyncio.run(scenario())
+
+
+def test_seed_classifies_which_predefined_statuses_block_shifts(use_test_db) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await ensure_indexes("estados")
+
+            entries = await catalog_service.seed_predefined_estados(ACTOR)
+
+            by_name = {entry["name"]: entry["blocks_shifts"] for entry in entries}
+            assert by_name == {
+                "Presencial": False,
+                "Virtual/Casa": False,
+                "Permiso": True,
+                "Vacaciones": True,
+                "Licencia": True,
+                "Incapacidad": True,
+                "Día libre": True,
+            }
+
+    asyncio.run(scenario())
+
+
+def test_seed_classifies_a_status_that_already_existed_without_the_field(use_test_db) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await ensure_indexes("estados")
+            # Simula un Estado creado antes de la spec 009: sin la clave en Mongo.
+            await catalog_model.insert_entry(
+                "estados", "Vacaciones", ACTOR["_id"], datetime.now(timezone.utc)
+            )
+
+            entries = await catalog_service.seed_predefined_estados(ACTOR)
+
+            vacaciones = next(entry for entry in entries if entry["name"] == "Vacaciones")
+            assert vacaciones["blocks_shifts"] is True
+
+    asyncio.run(scenario())
+
+
+def test_seed_does_not_revert_a_manual_classification(use_test_db) -> None:
+    """`blocks_shifts` solo se escribe cuando la clave no existe: si Gestión Humana
+    ya lo cambió a mano, volver a correr el seed no lo revierte."""
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await ensure_indexes("estados")
+            seeded = await catalog_service.seed_predefined_estados(ACTOR)
+            presencial = next(entry for entry in seeded if entry["name"] == "Presencial")
+            await catalog_service.set_blocks_shifts(
+                "estados", "Estado", presencial["_id"], True, ACTOR
+            )
+
+            again = await catalog_service.seed_predefined_estados(ACTOR)
+
+            presencial_again = next(entry for entry in again if entry["name"] == "Presencial")
+            assert presencial_again["blocks_shifts"] is True
 
     asyncio.run(scenario())

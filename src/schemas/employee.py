@@ -30,7 +30,12 @@ class EmployeeOut(BaseModel):
     full_name: str = Field(validation_alias="nombre_completo")
     position: str = Field(validation_alias="cargo")
     area: str
+    # Opcionales porque un empleado creado bajo la spec 002 puede no tener
+    # referencia al catálogo todavía (el Área era texto libre); el portal los usa
+    # para agrupar y contar empleados por Área y por Estado (spec 009, RF-6).
+    area_id: str | None = Field(default=None, validation_alias="area_id")
     area_name: str
+    status_id: str | None = Field(default=None, validation_alias="estado_id")
     status_name: str
     is_active: bool = Field(validation_alias="activo")
     created_by: str | None = Field(default=None, validation_alias="creado_por")
@@ -41,7 +46,8 @@ class EmployeeOut(BaseModel):
     status_updated_by: str | None = Field(default=None, validation_alias="estado_actualizado_por")
 
     @field_validator(
-        "id", "created_by", "updated_by", "status_updated_by", mode="before"
+        "id", "area_id", "status_id", "created_by", "updated_by", "status_updated_by",
+        mode="before",
     )
     @classmethod
     def stringify_object_id(cls, value: object) -> object:

@@ -5,6 +5,7 @@ from bson.errors import InvalidId
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from src.api.deps import require_admin, require_read
+from src.models.employee import count_employees_by_area
 from src.schemas.area import AreaCreate, AreaDisableOut, AreaOut, AreaUpdate
 from src.services import catalog_service
 
@@ -14,9 +15,8 @@ COLLECTION_NAME = "areas"
 ENTITY_LABEL = "Área"
 
 
-async def _count_assigned_employees(_entry_id: ObjectId) -> int:
-    # Placeholder hasta Fase 6 (count_employees_by_area en models/employee.py).
-    return 0
+async def _count_assigned_employees(entry_id: ObjectId) -> int:
+    return await count_employees_by_area(entry_id)
 
 
 def _parse_entry_id(entry_id: str) -> ObjectId:

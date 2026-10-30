@@ -75,9 +75,39 @@ def test_out_stringifies_object_ids_from_mongo_document(create_cls, update_cls, 
     assert entry_out.updated_by is None
 
 
-def test_estado_out_exposes_same_field_names_as_area_out_plus_is_predefined() -> None:
-    """Spec 005: EstadoOut gana `is_predefined`, exclusivo de Estados (RNF-2)."""
-    assert set(EstadoOut.model_fields) == set(AreaOut.model_fields) | {"is_predefined"}
+def test_estado_out_exposes_same_field_names_as_area_out_plus_its_own() -> None:
+    """Spec 005: EstadoOut gana `is_predefined`. Spec 009: gana `blocks_shifts`.
+    Ambos son exclusivos de Estados (RNF-2 de 005, RF-5 de 009)."""
+    assert set(EstadoOut.model_fields) == set(AreaOut.model_fields) | {
+        "is_predefined",
+        "blocks_shifts",
+    }
+
+
+def test_estado_out_defaults_blocks_shifts_to_false_when_missing_from_document() -> None:
+    """Un Estado creado antes de la spec 009 no tiene la clave: se lee sin migrar (RNF-6)."""
+    document = _make_document()
+
+    entry_out = EstadoOut(**document)
+
+    assert entry_out.blocks_shifts is False
+
+
+def test_estado_out_respects_blocks_shifts_true_from_document() -> None:
+    document = _make_document()
+    document["blocks_shifts"] = True
+
+    entry_out = EstadoOut(**document)
+
+    assert entry_out.blocks_shifts is True
+
+
+def test_estado_create_defaults_blocks_shifts_to_false() -> None:
+    assert EstadoCreate(name="Comisión").blocks_shifts is False
+
+
+def test_estado_create_accepts_blocks_shifts_true() -> None:
+    assert EstadoCreate(name="Licencia", blocks_shifts=True).blocks_shifts is True
 
 
 def test_estado_out_defaults_is_predefined_to_false_when_missing_from_document() -> None:

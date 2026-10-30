@@ -147,3 +147,13 @@ def test_history_query_accepts_partial_filter_combinations(filters: dict) -> Non
 def test_history_query_rejects_entity_type_outside_literal() -> None:
     with pytest.raises(ValidationError):
         HistoryQuery(entity_type="invalid_type")
+
+
+def test_entity_type_includes_the_configuration_catalogs() -> None:
+    """Spec 009, RNF-2: sin estos valores, GET /history falla al serializar las
+    entradas de Cargos, Plantillas de turno y Festivos."""
+    from typing import get_args
+
+    from src.schemas.history import EntityType
+
+    assert {"position", "shift_template", "holiday"} <= set(get_args(EntityType))

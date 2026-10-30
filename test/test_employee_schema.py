@@ -155,3 +155,40 @@ def test_employee_update_accepts_practicante_position() -> None:
     employee_update = EmployeeUpdate(position="practicante")
 
     assert employee_update.position == "practicante"
+
+
+def test_out_exposes_catalog_ids_from_the_mongo_document() -> None:
+    """Spec 009, RF-6: el portal agrupa y cuenta empleados por `area_id`/`status_id`;
+    en Mongo el Estado se guarda como `estado_id`."""
+    document = {
+        **_make_employee_out_kwargs(),
+        "area_id": "66f2000000000000000000cc",
+        "estado_id": "66f3000000000000000000dd",
+    }
+
+    employee_out = EmployeeOut(**document)
+
+    assert employee_out.area_id == "66f2000000000000000000cc"
+    assert employee_out.status_id == "66f3000000000000000000dd"
+
+
+def test_out_defaults_catalog_ids_to_none_for_pre_catalog_employees() -> None:
+    """Un empleado creado bajo la spec 002 puede no tener referencia al catálogo:
+    se lee sin migración previa, con los ids en None (spec 009, RNF-6)."""
+    employee_out = EmployeeOut(**_make_employee_out_kwargs())
+
+    assert employee_out.area_id is None
+    assert employee_out.status_id is None
+
+
+def test_out_stringifies_catalog_ids_given_as_object_ids() -> None:
+    from bson import ObjectId
+
+    area_id = ObjectId()
+    status_id = ObjectId()
+    document = {**_make_employee_out_kwargs(), "area_id": area_id, "estado_id": status_id}
+
+    employee_out = EmployeeOut(**document)
+
+    assert employee_out.area_id == str(area_id)
+    assert employee_out.status_id == str(status_id)

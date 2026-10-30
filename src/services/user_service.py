@@ -12,7 +12,12 @@ from src.api.deps import canonical_role
 from src.core.database import start_transaction
 from src.core.security import generate_temporary_password, hash_password
 from src.models.session import delete_sessions_by_user
-from src.models.user import find_user_by_email, list_users as list_user_documents, update_user
+from src.models.user import (
+    find_user_by_email,
+    find_user_by_id,
+    list_users as list_user_documents,
+    update_user,
+)
 from src.schemas.user import UserOut
 from src.services import history_service
 
@@ -22,6 +27,24 @@ class UserNotFoundError(Exception):
 
     def __init__(self) -> None:
         super().__init__("No existe una cuenta con ese correo")
+
+
+class UserIdNotFoundError(Exception):
+    """No existe una cuenta con el id indicado (spec 009, RF-7, RF-8)."""
+
+    def __init__(self) -> None:
+        super().__init__("No existe una cuenta con ese id")
+
+
+class SelfTargetError(Exception):
+    """Gestión Humana intentó cambiar su propio rol o desactivar su propia cuenta.
+
+    Se valida acá y no en la ruta para que el CLI herede la misma protección
+    (spec 009, plan.md decisión 8).
+    """
+
+    def __init__(self) -> None:
+        super().__init__("No podés cambiar el rol ni retirar el acceso de tu propia cuenta")
 
 
 def _utcnow() -> datetime:
@@ -94,6 +117,58 @@ async def reset_password(actor: dict[str, Any], email: str) -> dict[str, Any]:
         "temporary_password": temporary_password,
         "sessions_invalidated": sessions_invalidated,
     }
+
+
+async def change_role(actor: dict[str, Any], user_id: Any, role: str) -> dict[str, Any]:
+    """Cambia el rol de una cuenta e invalida sus sesiones activas (spec 009, RF-7).
+
+    El rol viaja dentro de la sesión, así que sin cerrarlas el rol nuevo no
+    aplicaría hasta que la sesión expirara por su cuenta. El rol nuevo, el cierre
+    de sesiones y la entrada de auditoría viajan en la misma transacción.
+    """
+    user = await find_user_by_id(user_id)
+    if user is None:
+        raise UserIdNotFoundError()
+    if actor.get("_id") == user["_id"]:
+        raise SelfTargetError()
+
+    changes = history_service.compute_diff({"role": user["role"]}, {"role": role}, ["role"])
+    if not changes:
+        return user
+
+    ahora = _utcnow()
+
+    async with start_transaction() as session:
+        try:
+            await update_user(user["email"], {"role": role}, session=session)
+            await delete_sessions_by_user(user["_id"], session=session)
+            await history_service.record_change(
+                session, "user", user["_id"], "update", changes, actor, ahora
+            )
+            await session.commit_transaction()
+        except Exception:
+            await session.abort_transaction()
+            raise
+
+    return await find_user_by_id(user_id)
+
+
+async def deactivate_user_by_id(actor: dict[str, Any], user_id: Any) -> dict[str, Any]:
+    """Retira el acceso de una cuenta identificada por id (spec 009, RF-8).
+
+    Delega en `deactivate_user`, que es la que ya audita e invalida sesiones, para
+    no duplicar esa lógica; acá solo se resuelven el id y las dos guardas.
+    """
+    user = await find_user_by_id(user_id)
+    if user is None:
+        raise UserIdNotFoundError()
+    if actor.get("_id") == user["_id"]:
+        raise SelfTargetError()
+    if not user["is_active"]:
+        return user
+
+    await deactivate_user(actor, user["email"])
+    return await find_user_by_id(user_id)
 
 
 async def list_users() -> list[UserOut]:

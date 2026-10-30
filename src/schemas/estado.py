@@ -5,10 +5,17 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 class EstadoCreate(BaseModel):
     name: str = Field(min_length=1, max_length=100)
+    # Un Estado nuevo no bloquea turnos salvo que se diga lo contrario: lo normal
+    # es que represente una modalidad de trabajo, no una ausencia (spec 009, RF-5).
+    blocks_shifts: bool = False
 
 
 class EstadoUpdate(BaseModel):
     name: str = Field(min_length=1, max_length=100)
+
+
+class EstadoBlocksShiftsUpdate(BaseModel):
+    blocks_shifts: bool
 
 
 class EstadoOut(BaseModel):
@@ -18,6 +25,9 @@ class EstadoOut(BaseModel):
     name: str
     is_enabled: bool
     is_predefined: bool = False
+    # Default False para los Estados creados antes de la spec 009, que no tienen
+    # la clave en Mongo: se leen sin migración previa (RNF-6).
+    blocks_shifts: bool = False
     created_at: datetime
     created_by: str | None = None
     updated_at: datetime | None = None

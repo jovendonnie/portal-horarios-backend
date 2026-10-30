@@ -10,6 +10,10 @@ class UserCreate(BaseModel):
     role: Literal["gestion_humana", "lider"]
 
 
+class UserRoleUpdate(BaseModel):
+    role: Literal["gestion_humana", "lider"]
+
+
 class UserOut(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 

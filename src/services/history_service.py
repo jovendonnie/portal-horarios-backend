@@ -20,6 +20,8 @@ from motor.motor_asyncio import AsyncIOMotorClientSession
 from src.models import catalog
 from src.models.employee import find_employee_by_id
 from src.models.history import insert_entry, list_entries
+from src.models.holiday import find_holiday_by_id
+from src.models.shift_template import find_template_by_id
 from src.models.user import find_user_by_id
 from src.schemas.history import EntityType, HistoryQuery
 
@@ -114,10 +116,17 @@ async def _find_status(entry_id: Any) -> dict[str, Any] | None:
     return await catalog.find_entry_by_id("estados", entry_id)
 
 
+async def _find_position(entry_id: Any) -> dict[str, Any] | None:
+    return await catalog.find_entry_by_id("cargos", entry_id)
+
+
 _ENTITY_LOOKUPS: dict[str, Callable[[Any], Awaitable[dict[str, Any] | None]]] = {
     "employee": find_employee_by_id,
     "area": _find_area,
     "status": _find_status,
+    "position": _find_position,
+    "shift_template": find_template_by_id,
+    "holiday": find_holiday_by_id,
     "user": find_user_by_id,
 }
 

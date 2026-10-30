@@ -226,3 +226,143 @@ def test_reset_password_atomicity_reverts_when_history_insert_fails(
             assert await find_session_by_token("token-a") is not None
 
     asyncio.run(scenario())
+
+
+# --- Spec 009: cambiar el rol y retirar el acceso por id (RF-7, RF-8) ---
+
+def test_change_role_updates_the_role_and_creates_history_entry(use_test_db) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await ensure_indexes()
+            user_id = await insert_user(_make_user("ana@hispacontact.com"))
+
+            updated = await user_service.change_role(ACTOR, user_id, "gestion_humana")
+
+            assert updated["role"] == "gestion_humana"
+
+            entries = await list_entries({"entity_type": "user", "entity_id": user_id})
+            assert [entry["action"] for entry in entries] == ["update"]
+            assert entries[0]["changes"] == [
+                {"field": "role", "old_value": "lider", "new_value": "gestion_humana"}
+            ]
+
+    asyncio.run(scenario())
+
+
+def test_change_role_invalidates_active_sessions(use_test_db) -> None:
+    """El rol viaja dentro de la sesión: sin cerrarla, el rol nuevo no aplicaría."""
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await ensure_indexes()
+            user_id = await insert_user(_make_user("ana@hispacontact.com"))
+            await insert_session(_make_session(user_id, "token-vigente"))
+
+            await user_service.change_role(ACTOR, user_id, "gestion_humana")
+
+            assert await find_session_by_token("token-vigente") is None
+
+    asyncio.run(scenario())
+
+
+def test_change_role_to_the_same_role_is_a_noop(use_test_db) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await ensure_indexes()
+            user_id = await insert_user(_make_user("ana@hispacontact.com"))
+            await insert_session(_make_session(user_id, "token-vigente"))
+
+            unchanged = await user_service.change_role(ACTOR, user_id, "lider")
+
+            assert unchanged["role"] == "lider"
+            assert await find_session_by_token("token-vigente") is not None
+            assert await list_entries({"entity_type": "user", "entity_id": user_id}) == []
+
+    asyncio.run(scenario())
+
+
+def test_change_role_rejects_the_actors_own_account(use_test_db) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await ensure_indexes()
+            user_id = await insert_user(_make_user("gestion@hispacontact.com"))
+            self_actor = {"_id": user_id, "full_name": "Gestión Humana"}
+
+            with pytest.raises(user_service.SelfTargetError):
+                await user_service.change_role(self_actor, user_id, "lider")
+
+            assert (await find_user_by_email("gestion@hispacontact.com"))["role"] == "lider"
+
+    asyncio.run(scenario())
+
+
+def test_change_role_with_an_unknown_id_raises(use_test_db) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            from bson import ObjectId
+
+            await ensure_indexes()
+
+            with pytest.raises(user_service.UserIdNotFoundError):
+                await user_service.change_role(ACTOR, ObjectId(), "lider")
+
+    asyncio.run(scenario())
+
+
+def test_deactivate_user_by_id_marks_inactive_and_invalidates_sessions(use_test_db) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await ensure_indexes()
+            user_id = await insert_user(_make_user("ana@hispacontact.com"))
+            await insert_session(_make_session(user_id, "token-vigente"))
+
+            updated = await user_service.deactivate_user_by_id(ACTOR, user_id)
+
+            assert updated["is_active"] is False
+            assert await find_session_by_token("token-vigente") is None
+
+            entries = await list_entries({"entity_type": "user", "entity_id": user_id})
+            assert [entry["action"] for entry in entries] == ["deactivate"]
+
+    asyncio.run(scenario())
+
+
+def test_deactivate_user_by_id_on_an_already_inactive_account_is_a_noop(use_test_db) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await ensure_indexes()
+            user_id = await insert_user(_make_user("ana@hispacontact.com", is_active=False))
+
+            unchanged = await user_service.deactivate_user_by_id(ACTOR, user_id)
+
+            assert unchanged["is_active"] is False
+            assert await list_entries({"entity_type": "user", "entity_id": user_id}) == []
+
+    asyncio.run(scenario())
+
+
+def test_deactivate_user_by_id_rejects_the_actors_own_account(use_test_db) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            await ensure_indexes()
+            user_id = await insert_user(_make_user("gestion@hispacontact.com"))
+            self_actor = {"_id": user_id, "full_name": "Gestión Humana"}
+
+            with pytest.raises(user_service.SelfTargetError):
+                await user_service.deactivate_user_by_id(self_actor, user_id)
+
+            assert (await find_user_by_email("gestion@hispacontact.com"))["is_active"] is True
+
+    asyncio.run(scenario())
+
+
+def test_deactivate_user_by_id_with_an_unknown_id_raises(use_test_db) -> None:
+    async def scenario() -> None:
+        async with mongo_test_session():
+            from bson import ObjectId
+
+            await ensure_indexes()
+
+            with pytest.raises(user_service.UserIdNotFoundError):
+                await user_service.deactivate_user_by_id(ACTOR, ObjectId())
+
+    asyncio.run(scenario())

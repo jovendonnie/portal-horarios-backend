@@ -24,7 +24,7 @@ mongo_connection = MongoConnection()
 
 async def arrancar_con_indices() -> tuple[list[str], list[str]]:
     """Crea los índices únicos de cada colección al arrancar, sin tumbar el servicio si ya hay duplicados (RF-12)."""
-    from src.models import catalog, employee, history, schedule
+    from src.models import catalog, employee, history, holiday, schedule, shift_template
     from src.models import user as user_model
 
     tareas = [
@@ -32,6 +32,9 @@ async def arrancar_con_indices() -> tuple[list[str], list[str]]:
         ("employees", employee.ensure_indexes),
         ("areas", partial(catalog.ensure_indexes, "areas")),
         ("estados", partial(catalog.ensure_indexes, "estados")),
+        ("cargos", partial(catalog.ensure_indexes, "cargos")),
+        ("shift_templates", shift_template.ensure_indexes),
+        ("holidays", holiday.ensure_indexes),
         ("history_entries", history.ensure_indexes),
         ("schedules", schedule.ensure_indexes),
     ]
